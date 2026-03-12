@@ -11,7 +11,10 @@ import {
   Trash2,
   ExternalLink,
   Download,
-  Crown
+  Crown,
+  Settings,
+  Package,
+  Github
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { reverseHebrewInString, containsHebrew } from './utils/hebrew';
@@ -32,9 +35,15 @@ export default function App() {
   const [directoryHandle, setDirectoryHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [isInIframe, setIsInIframe] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [appVersion] = useState('1.0.2-mobile');
+  const [githubToken, setGithubToken] = useState('');
+  const [buildStatus, setBuildStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [showBuildSettings, setShowBuildSettings] = useState(false);
 
   useEffect(() => {
     setIsInIframe(window.self !== window.top);
+    setIsMobile(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent));
     // Set document direction to RTL for Hebrew
     document.documentElement.dir = 'rtl';
   }, []);
@@ -48,8 +57,12 @@ export default function App() {
   };
 
   const handleSelectFolder = async () => {
-    if (isInIframe) {
-      addLog("⚠️ גישה ישירה לתיקיות חסומה בתצוגה המקדימה. נא לפתוח בלשונית חדשה.");
+    // Force mobile mode if on Android or if picker is missing
+    const forceMobile = isMobile || !('showDirectoryPicker' in window);
+    
+    if (isInIframe || forceMobile) {
+      addLog("📱 מצב טלפון: בוחרים את כל הקבצים בבת אחת...");
+      handleSelectFiles();
       return;
     }
 
@@ -88,7 +101,7 @@ export default function App() {
   };
 
   const handleSelectFiles = async () => {
-    if (isInIframe) {
+    if (isInIframe || isMobile || !('showOpenFilePicker' in window)) {
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;
@@ -102,7 +115,7 @@ export default function App() {
             status: 'pending'
           }));
           setFiles(prev => [...prev, ...fileList]);
-          addLog(`נוספו ${selectedFiles.length} קבצים (מצב העלאה/הורדה).`);
+          addLog(`נוספו ${selectedFiles.length} קבצים.`);
         }
       };
       input.click();
@@ -193,6 +206,45 @@ export default function App() {
     addLog('הרשימה נוקתה.');
   };
 
+  const triggerGithubBuild = async () => {
+    if (!githubToken) {
+      addLog('❌ חסר קוד גישה (Token) של GitHub');
+      setBuildStatus('error');
+      return;
+    }
+
+    setBuildStatus('loading');
+    addLog('🚀 שולח בקשה לבניית APK ב-GitHub...');
+
+    try {
+      const response = await fetch('https://api.github.com/repos/DAN6137/YAEIR/actions/workflows/android.yml/dispatches', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': `Bearer ${githubToken}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ref: 'main', // או ה-branch שבו נמצא הקוד
+        }),
+      });
+
+      if (response.ok) {
+        setBuildStatus('success');
+        addLog('✅ הבקשה התקבלה! הבנייה התחילה ב-GitHub.');
+        addLog('💡 ניתן לעקוב אחרי ההתקדמות בלשונית Actions ב-GitHub.');
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'נכשל לשלוח בקשה');
+      }
+    } catch (err) {
+      console.error(err);
+      setBuildStatus('error');
+      addLog(`❌ שגיאה בבנייה: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
+    }
+  };
+
   return (
     <div className="min-h-screen p-4 md:p-8 flex flex-col items-center font-sans" dir="rtl">
       <motion.div 
@@ -232,12 +284,99 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setShowBuildSettings(!showBuildSettings)}
+              className={`p-2 rounded-lg transition-colors ${showBuildSettings ? 'bg-[#00ff9d] text-black' : 'bg-[#333] text-white hover:bg-[#444]'}`}
+              title="הגדרות בנייה (APK)"
+            >
+              <Settings size={20} />
+            </button>
             <span className={`status-dot ${directoryHandle ? 'status-online' : 'status-offline'}`} />
             <span className="text-[10px] font-mono uppercase tracking-widest opacity-50">
               {directoryHandle ? 'גישה_ישירה' : isInIframe ? 'מצב_מוגבל' : 'מוכן'}
             </span>
           </div>
         </div>
+
+        {/* Build Settings Panel */}
+        {showBuildSettings && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            className="bg-[#111] border-b border-[#333] p-6"
+          >
+            <div className="flex items-center gap-2 mb-4 text-[#00ff9d]">
+              <Package size={20} />
+              <h2 className="font-bold">אריזת אפליקציה (Android APK)</h2>
+            </div>
+            
+            <div className="space-y-4 max-w-2xl">
+              <p className="text-xs text-gray-400 leading-relaxed text-right">
+                כדי לבנות קובץ התקנה (APK), אנחנו משתמשים ברובוט של GitHub. 
+                אתה צריך להזין "קוד גישה" (Personal Access Token) כדי לתת לאפליקציה רשות להפעיל את הרובוט.
+              </p>
+              
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] uppercase tracking-widest opacity-50 text-right">GitHub Access Token</label>
+                <div className="flex gap-2">
+                  <input 
+                    type="password" 
+                    value={githubToken}
+                    onChange={(e) => setGithubToken(e.target.value)}
+                    placeholder="הדבק כאן את ה-Token שלך..."
+                    className="flex-1 bg-black border border-[#333] rounded px-3 py-2 text-sm font-mono text-[#00ff9d] focus:border-[#00ff9d] outline-none text-right"
+                  />
+                  <button 
+                    onClick={triggerGithubBuild}
+                    disabled={buildStatus === 'loading'}
+                    className={`px-6 rounded font-bold flex items-center gap-2 transition-all ${
+                      buildStatus === 'loading' 
+                        ? 'bg-gray-800 text-gray-500 cursor-not-allowed' 
+                        : 'bg-[#00ff9d] text-black hover:bg-[#00cc7e]'
+                    }`}
+                  >
+                    {buildStatus === 'loading' ? <RotateCcw size={16} className="animate-spin" /> : <Play size={16} fill="currentColor" />}
+                    בנה APK עכשיו
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-4 mt-4 justify-end">
+                <a 
+                  href="https://github.com/settings/tokens/new?description=APK%20Builder&scopes=repo" 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="text-[10px] text-blue-400 hover:underline flex items-center gap-1"
+                >
+                  <ExternalLink size={10} />
+                  איך יוצרים Token? (בחר repo scope)
+                </a>
+                <a 
+                  href="https://github.com/DAN6137/YAEIR/actions" 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="text-[10px] text-gray-400 hover:underline flex items-center gap-1"
+                >
+                  <Github size={10} />
+                  צפה בהתקדמות ב-GitHub Actions
+                </a>
+              </div>
+
+              {buildStatus === 'success' && (
+                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded text-green-400 text-xs flex items-center gap-2 justify-end">
+                  <CheckCircle2 size={14} />
+                  הבנייה התחילה! בדוק את לשונית Actions ב-GitHub.
+                </div>
+              )}
+              {buildStatus === 'error' && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-red-400 text-xs flex items-center gap-2 justify-end">
+                  <AlertCircle size={14} />
+                  שגיאה בשליחת הבקשה. וודא שה-Token תקין.
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
 
         {/* Main Controls */}
         <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -363,7 +502,7 @@ export default function App() {
 
         {/* Footer */}
         <div className="p-4 bg-[#0a0a0a] border-t border-[#333] flex justify-between items-center text-[10px] font-mono opacity-50">
-          <div>מצב: {isInIframe ? 'חלון_מוגבל' : 'גישה_מלאה'}</div>
+          <div>מצב: {isInIframe ? 'חלון_מוגבל' : isMobile ? 'אנדרואיד' : 'גישה_מלאה'} | גרסה: {appVersion}</div>
           <div>קידוד: UTF-8</div>
         </div>
       </motion.div>
