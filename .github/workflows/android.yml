@@ -20,7 +20,9 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          npm install
+          npm install @capacitor/core @capacitor/cli @capacitor/android
 
       - name: Build Web Project
         run: npm run build
@@ -31,14 +33,10 @@ jobs:
           java-version: '17'
           distribution: 'zulu'
 
-      - name: Install Capacitor Android
-        run: npm install @capacitor/android
-
-      - name: Add Android Platform
-        run: npx cap add android || true
-
-      - name: Sync Capacitor
-        run: npx cap sync android
+      - name: Initialize Capacitor Android
+        run: |
+          npx cap add android || true
+          npx cap sync android
 
       - name: Build Android APK
         run: |
