@@ -33,8 +33,9 @@ jobs:
           java-version: '17'
           distribution: 'zulu'
 
-      - name: Initialize Capacitor Android
+      - name: Initialize Capacitor
         run: |
+          npx cap init "Yair App" "com.yair.app" --web-dir dist || true
           npx cap add android || true
           npx cap sync android
 
