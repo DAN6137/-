@@ -14,10 +14,15 @@ import {
   Crown,
   Settings,
   Package,
-  Github
+  Github,
+  Share2,
+  Save
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { reverseHebrewInString, containsHebrew } from './utils/hebrew';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import { Device } from '@capacitor/device';
 
 interface FileItem {
   name: string;
@@ -36,14 +41,29 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [isInIframe, setIsInIframe] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [appVersion] = useState('1.0.2-mobile');
+  const [isNativeApp, setIsNativeApp] = useState(false);
+  const [appVersion] = useState('1.2.0-pro-mode');
+  const [currentPath, setCurrentPath] = useState('');
+  const [nativeFiles, setNativeFiles] = useState<{name: string, isDirectory: boolean}[]>([]);
   const [githubToken, setGithubToken] = useState('');
   const [buildStatus, setBuildStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [showBuildSettings, setShowBuildSettings] = useState(false);
 
   useEffect(() => {
     setIsInIframe(window.self !== window.top);
-    setIsMobile(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent));
+    
+    const checkPlatform = async () => {
+      const info = await Device.getInfo();
+      setIsMobile(info.platform === 'android' || info.platform === 'ios');
+      setIsNativeApp(info.platform !== 'web');
+      
+      if (info.platform === 'android') {
+        // Start at root for Android
+        setCurrentPath('');
+      }
+    };
+    checkPlatform();
+
     // Set document direction to RTL for Hebrew
     document.documentElement.dir = 'rtl';
   }, []);
@@ -188,8 +208,40 @@ export default function App() {
     addLog(`העיבוד הושלם.`);
   };
 
-  const downloadFile = (file: FileItem) => {
+  const downloadFile = async (file: FileItem) => {
     if (!file.blob) return;
+
+    if (isNativeApp) {
+      try {
+        const reader = new FileReader();
+        reader.readAsDataURL(file.blob);
+        reader.onloadend = async () => {
+          const base64Data = (reader.result as string).split(',')[1];
+          
+          // Save to filesystem
+          const savedFile = await Filesystem.writeFile({
+            path: `MusicFix/${file.newName}`,
+            data: base64Data,
+            directory: Directory.Documents,
+            recursive: true
+          });
+
+          addLog(`✅ נשמר: ${file.newName}`);
+          
+          // Share option
+          await Share.share({
+            title: 'שתף שיר מתוקן',
+            text: file.newName,
+            url: savedFile.uri,
+            dialogTitle: 'איפה לשמור/לשתף?',
+          });
+        };
+      } catch (err) {
+        addLog(`❌ שגיאה בשמירה: ${err instanceof Error ? err.message : 'נכשל'}`);
+      }
+      return;
+    }
+
     const url = URL.createObjectURL(file.blob);
     const a = document.createElement('a');
     a.href = url;
@@ -198,6 +250,78 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const loadNativeDirectory = async (path: string) => {
+    try {
+      const result = await Filesystem.readdir({
+        path: path,
+        directory: Directory.ExternalStorage
+      });
+      
+      setNativeFiles(result.files.map(f => ({
+        name: f.name,
+        isDirectory: f.type === 'directory'
+      })));
+      setCurrentPath(path);
+      addLog(`📂 נכנס לתיקייה: ${path || 'שורש'}`);
+    } catch (err) {
+      addLog(`❌ שגיאה בגישה לתיקייה: ${err instanceof Error ? err.message : 'נכשל'}`);
+      if (err instanceof Error && err.message.includes('Permission')) {
+        addLog("💡 נראה שחסרה הרשאת 'גישה לכל הקבצים'. וודא שאישרת אותה בהגדרות המכשיר.");
+      }
+    }
+  };
+
+  const renameInPlace = async () => {
+    setIsProcessing(true);
+    addLog(`🚀 מתחיל שינוי שמות במקום בתיקייה: ${currentPath}`);
+    
+    let count = 0;
+    for (const file of nativeFiles) {
+      if (!file.isDirectory && containsHebrew(file.name)) {
+        const newName = reverseHebrewInString(file.name);
+        try {
+          await Filesystem.rename({
+            from: `${currentPath}/${file.name}`,
+            to: `${currentPath}/${newName}`,
+            directory: Directory.ExternalStorage
+          });
+          count++;
+          addLog(`✅ שונה: ${file.name} -> ${newName}`);
+        } catch (err) {
+          addLog(`❌ נכשל בשינוי ${file.name}: ${err instanceof Error ? err.message : 'שגיאה'}`);
+        }
+      }
+    }
+    
+    setIsProcessing(false);
+    addLog(`✨ סיימתי! שונו ${count} קבצים ישירות בתיקייה.`);
+    loadNativeDirectory(currentPath); // Refresh list
+  };
+
+  const navigateUp = () => {
+    const parts = currentPath.split('/');
+    parts.pop();
+    loadNativeDirectory(parts.join('/'));
+  };
+
+  const saveAllFiles = async () => {
+    const successFiles = files.filter(f => f.status === 'success' && f.blob);
+    if (successFiles.length === 0) {
+      addLog('⚠️ אין קבצים מוכנים לשמירה');
+      return;
+    }
+
+    setIsProcessing(true);
+    addLog(`💾 שומר ${successFiles.length} קבצים...`);
+
+    for (const file of successFiles) {
+      await downloadFile(file);
+    }
+
+    setIsProcessing(false);
+    addLog('✨ כל הקבצים נשמרו בתיקיית Documents/MusicFix');
   };
 
   const clearFiles = () => {
@@ -379,7 +503,74 @@ export default function App() {
         )}
 
         {/* Main Controls */}
-        <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="p-6">
+          {isNativeApp ? (
+            <div className="space-y-4">
+              <div className="p-4 bg-[#1a1a1a] border border-[#333] rounded-xl">
+                <h3 className="text-sm font-bold mb-2 flex items-center gap-2">
+                  <FolderOpen size={18} className="text-blue-400" />
+                  סייר קבצים (שינוי שמות במקום)
+                </h3>
+                <div className="text-[10px] text-gray-400 mb-3 text-right">
+                  נתיב נוכחי: <span className="font-mono text-blue-300">{currentPath || 'שורש'}</span>
+                </div>
+                
+                <div className="flex gap-2 mb-4 justify-end">
+                  {currentPath && (
+                    <button 
+                      onClick={navigateUp}
+                      className="px-3 py-1 bg-[#333] rounded-lg text-xs hover:bg-[#444]"
+                    >
+                      תיקייה למעלה
+                    </button>
+                  )}
+                  <button 
+                    onClick={() => loadNativeDirectory('')}
+                    className="px-3 py-1 bg-[#333] rounded-lg text-xs hover:bg-[#444]"
+                  >
+                    חזור לשורש
+                  </button>
+                </div>
+
+                <div className="max-h-[250px] overflow-y-auto border border-[#222] rounded-lg bg-[#0a0a0a] mb-4 custom-scrollbar">
+                  {nativeFiles.length === 0 && (
+                    <div className="p-8 text-center text-gray-500 text-sm italic">
+                      התיקייה ריקה או שאין הרשאת גישה
+                    </div>
+                  )}
+                  {nativeFiles.map((file, idx) => (
+                    <div 
+                      key={idx}
+                      onClick={() => file.isDirectory && loadNativeDirectory(`${currentPath ? currentPath + '/' : ''}${file.name}`)}
+                      className={`p-2 border-b border-[#111] flex items-center justify-between gap-2 text-xs hover:bg-[#151515] transition-colors ${file.isDirectory ? 'cursor-pointer text-blue-200' : 'text-gray-400'}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {file.isDirectory ? <FolderOpen size={14} className="text-blue-400" /> : <FileAudio size={14} className="text-gray-500" />}
+                        <span className="truncate">{file.name}</span>
+                      </div>
+                      {!file.isDirectory && containsHebrew(file.name) && (
+                        <span className="text-[10px] bg-blue-900/30 text-blue-400 px-1 rounded">עברית</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <button 
+                  onClick={renameInPlace}
+                  disabled={isProcessing || !nativeFiles.some(f => !f.isDirectory && containsHebrew(f.name))}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:opacity-50 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg transition-all"
+                >
+                  <ArrowRightLeft size={20} />
+                  שנה שמות לכל השירים בתיקייה זו
+                </button>
+              </div>
+              
+              <div className="text-center text-[10px] text-gray-500">
+                ⚠️ שים לב: הפעולה משנה את הקבצים ישירות בזיכרון הטלפון.
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-2 space-y-6">
             <div className="flex flex-wrap gap-3">
               <button 
@@ -406,6 +597,16 @@ export default function App() {
                 <Trash2 size={18} />
                 נקה רשימה
               </button>
+              {files.some(f => f.status === 'success') && (
+                <button 
+                  onClick={saveAllFiles}
+                  className="btn-primary bg-blue-600 border-blue-500 hover:bg-blue-500 flex items-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(37,99,235,0.4)]"
+                  disabled={isProcessing}
+                >
+                  <Save size={18} />
+                  שמור הכל לטלפון
+                </button>
+              )}
             </div>
 
             {/* File List */}
@@ -434,13 +635,15 @@ export default function App() {
                           <div className="flex items-center gap-2">
                             <CheckCircle2 size={16} className="text-[#00ff9d]" />
                             {file.blob && (
-                              <button 
-                                onClick={() => downloadFile(file)}
-                                className="p-1 bg-[#00ff9d22] rounded hover:bg-[#00ff9d44] text-[#00ff9d]"
-                                title="הורד קובץ מתוקן"
-                              >
-                                <Download size={14} />
-                              </button>
+                              <div className="flex gap-1">
+                                <button 
+                                  onClick={() => downloadFile(file)}
+                                  className="p-1 bg-[#00ff9d22] rounded hover:bg-[#00ff9d44] text-[#00ff9d]"
+                                  title="שמור/שתף"
+                                >
+                                  {isNativeApp ? <Share2 size={14} /> : <Download size={14} />}
+                                </button>
+                              </div>
                             )}
                           </div>
                         )}
@@ -499,6 +702,8 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+    </div>
 
         {/* Footer */}
         <div className="p-4 bg-[#0a0a0a] border-t border-[#333] flex justify-between items-center text-[10px] font-mono opacity-50">
