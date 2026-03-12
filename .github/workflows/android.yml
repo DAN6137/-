@@ -19,7 +19,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Build Web Project
         run: npm run build
@@ -29,9 +29,6 @@ jobs:
         with:
           java-version: '17'
           distribution: 'zulu'
-
-      - name: Install Capacitor Android
-        run: npm install @capacitor/android
 
       - name: Sync Capacitor
         run: |
