@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK (Pro Version)
 
 on:
   push:
@@ -37,22 +37,23 @@ jobs:
           fi
           npx cap sync android
           
-      - name: Inject Permissions
+      - name: Inject Pro Permissions & Manifest Fixes
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
-            # Add permissions before <application
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />' $MANIFEST
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />' $MANIFEST
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />' $MANIFEST
-            
-            # Add requestLegacyExternalStorage to <application tag
-            sed -i 's/<application/<application android:requestLegacyExternalStorage="true"/' $MANIFEST
-            
-            # Ensure the manifest tag has the tools namespace
+            # 1. Add XML namespaces if missing
             if ! grep -q "xmlns:tools" $MANIFEST; then
               sed -i 's/<manifest/<manifest xmlns:tools="http:\/\/schemas.android.com\/tools"/' $MANIFEST
             fi
+            
+            # 2. Add the "All Files Access" permission (Android 11+)
+            # We add it before the <application tag
+            sed -i '/<application/i \    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />' $MANIFEST
+            sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />' $MANIFEST
+            sed -i '/<application/i \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />' $MANIFEST
+            
+            # 3. Enable Legacy Storage for older Android versions
+            sed -i 's/<application/<application android:requestLegacyExternalStorage="true"/' $MANIFEST
           fi
 
       - name: Build Android APK
