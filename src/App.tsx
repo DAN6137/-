@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { reverseHebrewInString, containsHebrew } from './utils/hebrew';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, PermissionStatus } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { Device } from '@capacitor/device';
 
@@ -42,7 +42,8 @@ export default function App() {
   const [isInIframe, setIsInIframe] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [isNativeApp, setIsNativeApp] = useState(false);
-  const [appVersion] = useState('1.2.0-pro-mode');
+  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null);
+  const [appVersion] = useState('1.3.0-pro-mode');
   const [currentPath, setCurrentPath] = useState('');
   const [nativeFiles, setNativeFiles] = useState<{name: string, isDirectory: boolean}[]>([]);
   const [githubToken, setGithubToken] = useState('');
@@ -60,6 +61,7 @@ export default function App() {
       if (info.platform === 'android') {
         // Start at root for Android
         setCurrentPath('');
+        checkPermissions();
       }
     };
     checkPlatform();
@@ -67,6 +69,31 @@ export default function App() {
     // Set document direction to RTL for Hebrew
     document.documentElement.dir = 'rtl';
   }, []);
+
+  const checkPermissions = async () => {
+    try {
+      const status = await Filesystem.checkPermissions();
+      setPermissionStatus(status);
+      addLog(`מצב הרשאות: ${status.publicStorage}`);
+    } catch (err) {
+      console.error('Error checking permissions:', err);
+    }
+  };
+
+  const requestPermissions = async () => {
+    try {
+      addLog("מבקש הרשאות אחסון...");
+      const status = await Filesystem.requestPermissions();
+      setPermissionStatus(status);
+      addLog(`תוצאת בקשה: ${status.publicStorage}`);
+      
+      if (status.publicStorage !== 'granted') {
+        addLog("⚠️ הרשאת אחסון לא אושרה. ייתכן שיהיה עליך לאשר ידנית בהגדרות.");
+      }
+    } catch (err) {
+      addLog(`❌ שגיאה בבקשת הרשאות: ${err instanceof Error ? err.message : 'נכשל'}`);
+    }
+  };
 
   const addLog = (msg: string) => {
     setLogs(prev => [msg, ...prev].slice(0, 50));
@@ -77,7 +104,6 @@ export default function App() {
   };
 
   const handleSelectFolder = async () => {
-    // Force mobile mode if on Android or if picker is missing
     const forceMobile = isMobile || !('showDirectoryPicker' in window);
     
     if (isInIframe || forceMobile) {
@@ -114,9 +140,6 @@ export default function App() {
     } catch (err) {
       console.error(err);
       addLog(`שגיאה: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
-      if (err instanceof Error && err.name === 'SecurityError') {
-        addLog("💡 מגבלת אבטחה: נא לפתוח את האפליקציה בלשונית חדשה כדי להשתמש בתכונה זו.");
-      }
     }
   };
 
@@ -218,7 +241,6 @@ export default function App() {
         reader.onloadend = async () => {
           const base64Data = (reader.result as string).split(',')[1];
           
-          // Save to filesystem
           const savedFile = await Filesystem.writeFile({
             path: `MusicFix/${file.newName}`,
             data: base64Data,
@@ -228,7 +250,6 @@ export default function App() {
 
           addLog(`✅ נשמר: ${file.newName}`);
           
-          // Share option
           await Share.share({
             title: 'שתף שיר מתוקן',
             text: file.newName,
@@ -267,8 +288,10 @@ export default function App() {
       addLog(`📂 נכנס לתיקייה: ${path || 'שורש'}`);
     } catch (err) {
       addLog(`❌ שגיאה בגישה לתיקייה: ${err instanceof Error ? err.message : 'נכשל'}`);
-      if (err instanceof Error && err.message.includes('Permission')) {
-        addLog("💡 נראה שחסרה הרשאת 'גישה לכל הקבצים'. וודא שאישרת אותה בהגדרות המכשיר.");
+      if (err instanceof Error && (err.message.includes('Permission') || err.message.includes('denied'))) {
+        addLog("💡 שים לב: באנדרואיד 11 ומעלה, חובה לאשר 'גישה לכל הקבצים' (All Files Access) בהגדרות האפליקציה.");
+        addLog("1. פתח הגדרות מכשיר > אפליקציות > מתקן שמות שירים");
+        addLog("2. הרשאות > קבצים ומדיה > סמן 'אפשר ניהול של כל הקבצים'");
       }
     }
   };
@@ -297,7 +320,7 @@ export default function App() {
     
     setIsProcessing(false);
     addLog(`✨ סיימתי! שונו ${count} קבצים ישירות בתיקייה.`);
-    loadNativeDirectory(currentPath); // Refresh list
+    loadNativeDirectory(currentPath);
   };
 
   const navigateUp = () => {
@@ -350,14 +373,13 @@ export default function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          ref: 'main', // או ה-branch שבו נמצא הקוד
+          ref: 'main',
         }),
       });
 
       if (response.ok) {
         setBuildStatus('success');
         addLog('✅ הבקשה התקבלה! הבנייה התחילה ב-GitHub.');
-        addLog('💡 ניתן לעקוב אחרי ההתקדמות בלשונית Actions ב-GitHub.');
       } else {
         const errorData = await response.json();
         throw new Error(errorData.message || 'נכשל לשלוח בקשה');
@@ -376,23 +398,6 @@ export default function App() {
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-4xl hardware-card overflow-hidden"
       >
-        {/* Iframe Warning */}
-        {isInIframe && (
-          <div className="bg-amber-500/20 border-b border-amber-500/30 p-3 flex items-center justify-between text-amber-200 text-xs">
-            <div className="flex items-center gap-2">
-              <AlertCircle size={14} />
-              <span>מצב תצוגה מקדימה: שינוי שמות ישיר חסום מטעמי אבטחה.</span>
-            </div>
-            <button 
-              onClick={handleOpenInNewTab}
-              className="flex items-center gap-1 bg-amber-500 text-black px-2 py-1 rounded font-bold hover:bg-amber-400 transition-colors"
-            >
-              <ExternalLink size={12} />
-              פתח בלשונית חדשה
-            </button>
-          </div>
-        )}
-
         {/* Header */}
         <div className="p-6 border-b border-[#333] flex items-center justify-between bg-[#1a1a1a]">
           <div className="flex items-center gap-3">
@@ -411,14 +416,10 @@ export default function App() {
             <button 
               onClick={() => setShowBuildSettings(!showBuildSettings)}
               className={`p-2 rounded-lg transition-colors ${showBuildSettings ? 'bg-[#00ff9d] text-black' : 'bg-[#333] text-white hover:bg-[#444]'}`}
-              title="הגדרות בנייה (APK)"
             >
               <Settings size={20} />
             </button>
             <span className={`status-dot ${directoryHandle ? 'status-online' : 'status-offline'}`} />
-            <span className="text-[10px] font-mono uppercase tracking-widest opacity-50">
-              {directoryHandle ? 'גישה_ישירה' : isInIframe ? 'מצב_מוגבל' : 'מוכן'}
-            </span>
           </div>
         </div>
 
@@ -433,13 +434,7 @@ export default function App() {
               <Package size={20} />
               <h2 className="font-bold">אריזת אפליקציה (Android APK)</h2>
             </div>
-            
             <div className="space-y-4 max-w-2xl">
-              <p className="text-xs text-gray-400 leading-relaxed text-right">
-                כדי לבנות קובץ התקנה (APK), אנחנו משתמשים ברובוט של GitHub. 
-                אתה צריך להזין "קוד גישה" (Personal Access Token) כדי לתת לאפליקציה רשות להפעיל את הרובוט.
-              </p>
-              
               <div className="flex flex-col gap-2">
                 <label className="text-[10px] uppercase tracking-widest opacity-50 text-right">GitHub Access Token</label>
                 <div className="flex gap-2">
@@ -448,56 +443,17 @@ export default function App() {
                     value={githubToken}
                     onChange={(e) => setGithubToken(e.target.value)}
                     placeholder="הדבק כאן את ה-Token שלך..."
-                    className="flex-1 bg-black border border-[#333] rounded px-3 py-2 text-sm font-mono text-[#00ff9d] focus:border-[#00ff9d] outline-none text-right"
+                    className="flex-1 bg-black border border-[#333] rounded px-3 py-2 text-sm font-mono text-[#00ff9d] outline-none text-right"
                   />
                   <button 
                     onClick={triggerGithubBuild}
                     disabled={buildStatus === 'loading'}
-                    className={`px-6 rounded font-bold flex items-center gap-2 transition-all ${
-                      buildStatus === 'loading' 
-                        ? 'bg-gray-800 text-gray-500 cursor-not-allowed' 
-                        : 'bg-[#00ff9d] text-black hover:bg-[#00cc7e]'
-                    }`}
+                    className="px-6 rounded font-bold bg-[#00ff9d] text-black hover:bg-[#00cc7e] disabled:bg-gray-800"
                   >
-                    {buildStatus === 'loading' ? <RotateCcw size={16} className="animate-spin" /> : <Play size={16} fill="currentColor" />}
-                    בנה APK עכשיו
+                    בנה APK
                   </button>
                 </div>
               </div>
-
-              <div className="flex flex-wrap gap-4 mt-4 justify-end">
-                <a 
-                  href="https://github.com/settings/tokens/new?description=APK%20Builder&scopes=repo" 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="text-[10px] text-blue-400 hover:underline flex items-center gap-1"
-                >
-                  <ExternalLink size={10} />
-                  איך יוצרים Token? (בחר repo scope)
-                </a>
-                <a 
-                  href="https://github.com/DAN6137/YAEIR/actions" 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="text-[10px] text-gray-400 hover:underline flex items-center gap-1"
-                >
-                  <Github size={10} />
-                  צפה בהתקדמות ב-GitHub Actions
-                </a>
-              </div>
-
-              {buildStatus === 'success' && (
-                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded text-green-400 text-xs flex items-center gap-2 justify-end">
-                  <CheckCircle2 size={14} />
-                  הבנייה התחילה! בדוק את לשונית Actions ב-GitHub.
-                </div>
-              )}
-              {buildStatus === 'error' && (
-                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-red-400 text-xs flex items-center gap-2 justify-end">
-                  <AlertCircle size={14} />
-                  שגיאה בשליחת הבקשה. וודא שה-Token תקין.
-                </div>
-              )}
             </div>
           </motion.div>
         )}
@@ -517,40 +473,22 @@ export default function App() {
                 
                 <div className="flex gap-2 mb-4 justify-end">
                   {currentPath && (
-                    <button 
-                      onClick={navigateUp}
-                      className="px-3 py-1 bg-[#333] rounded-lg text-xs hover:bg-[#444]"
-                    >
-                      תיקייה למעלה
-                    </button>
+                    <button onClick={navigateUp} className="px-3 py-1 bg-[#333] rounded-lg text-xs">תיקייה למעלה</button>
                   )}
-                  <button 
-                    onClick={() => loadNativeDirectory('')}
-                    className="px-3 py-1 bg-[#333] rounded-lg text-xs hover:bg-[#444]"
-                  >
-                    חזור לשורש
-                  </button>
+                  <button onClick={() => loadNativeDirectory('')} className="px-3 py-1 bg-[#333] rounded-lg text-xs">חזור לשורש</button>
                 </div>
 
                 <div className="max-h-[250px] overflow-y-auto border border-[#222] rounded-lg bg-[#0a0a0a] mb-4 custom-scrollbar">
-                  {nativeFiles.length === 0 && (
-                    <div className="p-8 text-center text-gray-500 text-sm italic">
-                      התיקייה ריקה או שאין הרשאת גישה
-                    </div>
-                  )}
                   {nativeFiles.map((file, idx) => (
                     <div 
                       key={idx}
                       onClick={() => file.isDirectory && loadNativeDirectory(`${currentPath ? currentPath + '/' : ''}${file.name}`)}
-                      className={`p-2 border-b border-[#111] flex items-center justify-between gap-2 text-xs hover:bg-[#151515] transition-colors ${file.isDirectory ? 'cursor-pointer text-blue-200' : 'text-gray-400'}`}
+                      className={`p-2 border-b border-[#111] flex items-center justify-between gap-2 text-xs ${file.isDirectory ? 'cursor-pointer text-blue-200' : 'text-gray-400'}`}
                     >
                       <div className="flex items-center gap-2">
                         {file.isDirectory ? <FolderOpen size={14} className="text-blue-400" /> : <FileAudio size={14} className="text-gray-500" />}
                         <span className="truncate">{file.name}</span>
                       </div>
-                      {!file.isDirectory && containsHebrew(file.name) && (
-                        <span className="text-[10px] bg-blue-900/30 text-blue-400 px-1 rounded">עברית</span>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -558,157 +496,76 @@ export default function App() {
                 <button 
                   onClick={renameInPlace}
                   disabled={isProcessing || !nativeFiles.some(f => !f.isDirectory && containsHebrew(f.name))}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:opacity-50 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg transition-all"
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 rounded-xl font-bold flex items-center justify-center gap-2"
                 >
                   <ArrowRightLeft size={20} />
                   שנה שמות לכל השירים בתיקייה זו
                 </button>
-              </div>
-              
-              <div className="text-center text-[10px] text-gray-500">
-                ⚠️ שים לב: הפעולה משנה את הקבצים ישירות בזיכרון הטלפון.
+
+                {/* Android Permission Help */}
+                <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-[11px] text-amber-200">
+                  <div className="font-bold flex items-center gap-2 mb-1">
+                    <AlertCircle size={14} />
+                    טיפול בהרשאות (אנדרואיד)
+                  </div>
+                  <p className="mb-2 text-right">אם האפליקציה לא מצליחה לשנות שמות, עליך לאשר "גישה לכל הקבצים":</p>
+                  <ol className="list-decimal list-inside space-y-1 opacity-80 text-right">
+                    <li>לחץ על "בקש הרשאות" למטה</li>
+                    <li>אם זה לא עוזר, פתח את הגדרות האפליקציה בטלפון</li>
+                    <li>כנס ל"הרשאות" -{'>'} "קבצים ומדיה"</li>
+                    <li>בחר ב-"אפשר ניהול של כל הקבצים"</li>
+                  </ol>
+                  <button 
+                    onClick={requestPermissions}
+                    className="mt-3 w-full py-2 bg-amber-600 hover:bg-amber-500 text-black font-bold rounded-lg transition-colors"
+                  >
+                    בקש הרשאות בסיסיות
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="md:col-span-2 space-y-6">
-            <div className="flex flex-wrap gap-3">
-              <button 
-                onClick={handleSelectFolder}
-                className={`btn-primary flex items-center gap-2 cursor-pointer ${isInIframe ? 'opacity-50 grayscale' : ''}`}
-                disabled={isProcessing}
-              >
-                <FolderOpen size={18} />
-                בחר תיקייה
-              </button>
-              <button 
-                onClick={handleSelectFiles}
-                className="btn-secondary flex items-center gap-2 cursor-pointer"
-                disabled={isProcessing}
-              >
-                <FileText size={18} />
-                {isInIframe ? 'הוסף קבצים' : 'בחר קבצים'}
-              </button>
-              <button 
-                onClick={clearFiles}
-                className="btn-secondary flex items-center gap-2 text-red-400 border-red-900/30 cursor-pointer"
-                disabled={isProcessing}
-              >
-                <Trash2 size={18} />
-                נקה רשימה
-              </button>
-              {files.some(f => f.status === 'success') && (
-                <button 
-                  onClick={saveAllFiles}
-                  className="btn-primary bg-blue-600 border-blue-500 hover:bg-blue-500 flex items-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(37,99,235,0.4)]"
-                  disabled={isProcessing}
-                >
-                  <Save size={18} />
-                  שמור הכל לטלפון
-                </button>
-              )}
-            </div>
-
-            {/* File List */}
-            <div className="lcd-display h-[400px] overflow-y-auto custom-scrollbar">
-              {files.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center opacity-30 text-center">
-                  <FileAudio size={48} className="mb-4" />
-                  <p className="text-lg font-bold">אין קבצים טעונים</p>
-                  <p className="text-xs mt-2">
-                    {isInIframe 
-                      ? "השתמש ב'הוסף קבצים' או פתח בלשונית חדשה לגישה לתיקיות" 
-                      : "בחר תיקייה או קבצים כדי להתחיל"}
-                  </p>
+              <div className="md:col-span-2 space-y-6">
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={handleSelectFolder} className="btn-primary flex items-center gap-2">בחר תיקייה</button>
+                  <button onClick={handleSelectFiles} className="btn-secondary flex items-center gap-2">בחר קבצים</button>
                 </div>
-              ) : (
-                <div className="space-y-2">
+                <div className="lcd-display h-[400px] overflow-y-auto custom-scrollbar">
                   {files.map((file, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-2 border-b border-[#00ff9d11] hover:bg-[#00ff9d05] transition-colors">
+                    <div key={idx} className="flex items-center justify-between p-2 border-b border-[#00ff9d11]">
                       <div className="flex-1 min-w-0 pl-4 text-right">
                         <div className="text-[10px] opacity-40 truncate">{file.name}</div>
                         <div className="text-sm font-bold truncate text-[#00ff9d]">{file.newName}</div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        {file.status === 'pending' && <div className="text-[10px] opacity-50">ממתין</div>}
-                        {file.status === 'success' && (
-                          <div className="flex items-center gap-2">
-                            <CheckCircle2 size={16} className="text-[#00ff9d]" />
-                            {file.blob && (
-                              <div className="flex gap-1">
-                                <button 
-                                  onClick={() => downloadFile(file)}
-                                  className="p-1 bg-[#00ff9d22] rounded hover:bg-[#00ff9d44] text-[#00ff9d]"
-                                  title="שמור/שתף"
-                                >
-                                  {isNativeApp ? <Share2 size={14} /> : <Download size={14} />}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {file.status === 'error' && (
-                          <div className="flex items-center gap-1 text-red-400">
-                            <AlertCircle size={16} />
-                            <span className="text-[10px]">{file.error}</span>
-                          </div>
-                        )}
-                      </div>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          </div>
-
-          {/* Sidebar / Logs */}
-          <div className="space-y-6">
-            <div className="hardware-card p-4 bg-[#0a0a0a]">
-              <h3 className="text-[10px] font-mono uppercase tracking-widest mb-3 opacity-50">יומן מערכת</h3>
-              <div className="h-[200px] overflow-y-auto font-mono text-[10px] space-y-1 text-[#00ff9d88] text-right">
-                {logs.length === 0 && <div className="opacity-30 italic">ממתין לפעולה...</div>}
-                {logs.map((log, i) => (
-                  <div key={i} className="border-r border-[#00ff9d33] pr-2">{`${log} <`}</div>
-                ))}
+              </div>
+              <div className="space-y-6">
+                <div className="hardware-card p-4 bg-[#0a0a0a]">
+                  <h3 className="text-[10px] font-mono uppercase tracking-widest mb-3 opacity-50">יומן מערכת</h3>
+                  <div className="h-[200px] overflow-y-auto font-mono text-[10px] space-y-1 text-[#00ff9d88] text-right">
+                    {logs.map((log, i) => (
+                      <div key={i} className="border-r border-[#00ff9d33] pr-2">{`${log} <`}</div>
+                    ))}
+                  </div>
+                </div>
+                <button 
+                  onClick={processFiles}
+                  disabled={isProcessing || files.length === 0}
+                  className="w-full py-4 rounded-lg bg-[#00ff9d] text-black font-bold text-lg"
+                >
+                  התחל שינוי שם
+                </button>
               </div>
             </div>
-
-            <button 
-              onClick={processFiles}
-              disabled={isProcessing || files.length === 0}
-              className={`w-full py-4 rounded-lg flex items-center justify-center gap-3 font-bold text-lg transition-all
-                ${isProcessing || files.length === 0 
-                  ? 'bg-gray-800 text-gray-600 cursor-not-allowed' 
-                  : 'bg-[#00ff9d] text-black hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_20px_rgba(0,255,157,0.3)]'
-                }`}
-            >
-              {isProcessing ? (
-                <>
-                  <RotateCcw className="animate-spin" />
-                  מעבד...
-                </>
-              ) : (
-                <>
-                  <Play fill="currentColor" />
-                  {isInIframe ? 'עבד קבצים' : 'התחל שינוי שם'}
-                </>
-              )}
-            </button>
-
-            <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[11px] text-blue-300 leading-relaxed text-right">
-              <p className="font-bold mb-1">⚠️ חשוב לדעת</p>
-              בתצוגה המקדימה של AI Studio, חובה להשתמש בכפתור <b>"פתח בלשונית חדשה"</b> כדי לאפשר שינוי שמות ישיר בתיקיות. 
-              בתוך חלון זה, ניתן רק לעבד קבצים בודדים אותם תצטרכו להוריד מחדש.
-            </div>
-          </div>
+          )}
         </div>
-      )}
-    </div>
 
         {/* Footer */}
         <div className="p-4 bg-[#0a0a0a] border-t border-[#333] flex justify-between items-center text-[10px] font-mono opacity-50">
-          <div>מצב: {isInIframe ? 'חלון_מוגבל' : isMobile ? 'אנדרואיד' : 'גישה_מלאה'} | גרסה: {appVersion}</div>
-          <div>קידוד: UTF-8</div>
+          <div>מצב: {isNativeApp ? 'אנדרואיד' : 'גישה_מלאה'} | גרסה: {appVersion}</div>
         </div>
       </motion.div>
     </div>
