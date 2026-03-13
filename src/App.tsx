@@ -11,7 +11,9 @@ import {
   ChevronLeft,
   Info,
   Layers,
-  CheckCircle2
+  CheckCircle2,
+  HardDrive,
+  Home
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -36,6 +38,7 @@ interface FileEntry {
 export default function App() {
   // State
   const [currentPath, setCurrentPath] = useState('');
+  const [isAbsolute, setIsAbsolute] = useState(false); // Track if we are using absolute paths (for SD/OTG)
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -51,7 +54,7 @@ export default function App() {
       
       if (info.platform === 'android') {
         checkPermissions();
-        loadDirectory('');
+        loadDirectory('', false);
       }
     };
     init();
@@ -84,16 +87,18 @@ export default function App() {
   };
 
   // File Operations
-  const loadDirectory = async (path: string) => {
+  const loadDirectory = async (path: string, absolute: boolean) => {
     try {
-      const result = await Filesystem.readdir({
-        path: path,
-        directory: Directory.ExternalStorage
-      });
+      const options: any = { path };
+      if (!absolute) {
+        options.directory = Directory.ExternalStorage;
+      }
+      
+      const result = await Filesystem.readdir(options);
       
       const mappedFiles: FileEntry[] = result.files.map(f => ({
         name: f.name,
-        path: path ? `${path}/${f.name}` : f.name,
+        path: absolute ? (path.endsWith('/') ? `${path}${f.name}` : `${path}/${f.name}`) : (path ? `${path}/${f.name}` : f.name),
         isDirectory: f.type === 'directory',
         hasHebrew: containsHebrew(f.name)
       }));
@@ -105,7 +110,8 @@ export default function App() {
 
       setFiles(mappedFiles);
       setCurrentPath(path);
-      addLog(`📂 נכנס ל: ${path || 'שורש'}`);
+      setIsAbsolute(absolute);
+      addLog(`📂 נכנס ל: ${path || (absolute ? '/' : 'שורש פנימי')}`);
     } catch (err) {
       addLog(`❌ שגיאה בטעינה: ${err instanceof Error ? err.message : 'נכשל'}`);
       if (err instanceof Error && (err.message.includes('Permission') || err.message.includes('denied'))) {
@@ -115,32 +121,36 @@ export default function App() {
   };
 
   // Recursive Renaming Logic
-  const processRecursive = async (path: string) => {
+  const processRecursive = async (path: string, absolute: boolean) => {
     let count = 0;
     try {
-      const result = await Filesystem.readdir({
-        path: path,
-        directory: Directory.ExternalStorage
-      });
+      const options: any = { path };
+      if (!absolute) options.directory = Directory.ExternalStorage;
+      
+      const result = await Filesystem.readdir(options);
 
       for (const file of result.files) {
-        const fullPath = path ? `${path}/${file.name}` : file.name;
+        const fullPath = absolute 
+          ? (path.endsWith('/') ? `${path}${file.name}` : `${path}/${file.name}`)
+          : (path ? `${path}/${file.name}` : file.name);
         
-        // 1. If it's a directory, go deeper first (bottom-up renaming)
+        // 1. If it's a directory, go deeper first
         if (file.type === 'directory') {
-          count += await processRecursive(fullPath);
+          count += await processRecursive(fullPath, absolute);
         }
 
         // 2. Rename the current item if it has Hebrew
         if (containsHebrew(file.name)) {
           const newName = reverseHebrewInString(file.name);
-          const newPath = path ? `${path}/${newName}` : newName;
+          const newPath = absolute
+            ? (path.endsWith('/') ? `${path}${newName}` : `${path}/${newName}`)
+            : (path ? `${path}/${newName}` : newName);
           
           try {
             await Filesystem.rename({
               from: fullPath,
               to: newPath,
-              directory: Directory.ExternalStorage
+              directory: absolute ? undefined : Directory.ExternalStorage
             });
             count++;
             addLog(`✅ שונה: ${file.name} -> ${newName}`);
@@ -157,13 +167,13 @@ export default function App() {
 
   const handleDeepFix = async () => {
     setIsProcessing(true);
-    addLog(`🚀 מתחיל תיקון עמוק (רקורסיבי) מתיקייה: ${currentPath || 'שורש'}`);
+    addLog(`🚀 מתחיל תיקון עמוק מ: ${currentPath || (isAbsolute ? '/' : 'שורש פנימי')}`);
     
-    const totalRenamed = await processRecursive(currentPath);
+    const totalRenamed = await processRecursive(currentPath, isAbsolute);
     
     setIsProcessing(false);
-    addLog(`✨ סיימתי תיקון עמוק! שונו ${totalRenamed} פריטים (קבצים ותיקיות).`);
-    loadDirectory(currentPath);
+    addLog(`✨ סיימתי תיקון עמוק! שונו ${totalRenamed} פריטים.`);
+    loadDirectory(currentPath, isAbsolute);
   };
 
   const handleRenameCurrentOnly = async () => {
@@ -174,18 +184,20 @@ export default function App() {
     }
 
     setIsProcessing(true);
-    addLog(`🚀 מתחיל שינוי שמות ל-${itemsToFix.length} פריטים בתיקייה הנוכחית...`);
+    addLog(`🚀 מתחיל שינוי שמות ל-${itemsToFix.length} פריטים...`);
     
     let successCount = 0;
     for (const file of itemsToFix) {
       const newName = reverseHebrewInString(file.name);
-      const newPath = currentPath ? `${currentPath}/${newName}` : newName;
+      const newPath = isAbsolute
+        ? (currentPath.endsWith('/') ? `${currentPath}${newName}` : `${currentPath}/${newName}`)
+        : (currentPath ? `${currentPath}/${newName}` : newName);
       
       try {
         await Filesystem.rename({
           from: file.path,
           to: newPath,
-          directory: Directory.ExternalStorage
+          directory: isAbsolute ? undefined : Directory.ExternalStorage
         });
         successCount++;
         addLog(`✅ שונה: ${file.name}`);
@@ -196,21 +208,39 @@ export default function App() {
     
     setIsProcessing(false);
     addLog(`✨ סיימתי! שונו ${successCount} פריטים.`);
-    loadDirectory(currentPath);
+    loadDirectory(currentPath, isAbsolute);
   };
 
   const navigateUp = () => {
-    if (!currentPath) return;
-    const parts = currentPath.split('/');
+    if (!currentPath || currentPath === '/') {
+      if (isAbsolute) {
+        // If we are at /storage, we can't go higher safely in some versions, but let's try
+        const parts = currentPath.split('/').filter(Boolean);
+        if (parts.length === 0) return;
+        parts.pop();
+        loadDirectory('/' + parts.join('/'), true);
+      }
+      return;
+    }
+    const parts = currentPath.split('/').filter(Boolean);
     parts.pop();
-    loadDirectory(parts.join('/'));
+    const newPath = isAbsolute ? '/' + parts.join('/') : parts.join('/');
+    loadDirectory(newPath, isAbsolute);
+  };
+
+  const goToStorageRoot = () => {
+    loadDirectory('/storage', true);
+  };
+
+  const goToHome = () => {
+    loadDirectory('', false);
   };
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-[#007AFF] selection:text-white" dir="rtl">
       <div className="max-w-2xl mx-auto p-4 md:p-8">
         
-        {/* Header - Clean & Minimal */}
+        {/* Header */}
         <header className="mb-10 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-gray-100">
@@ -219,16 +249,25 @@ export default function App() {
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-gray-900">מתקן שמות שירים</h1>
               <div className="flex items-center gap-1 text-[#007AFF] text-[11px] font-semibold">
-                <span>גרסת PRO 2.5</span>
+                <span>גרסת ULTIMATE 3.0</span>
               </div>
             </div>
           </div>
-          <button 
-            onClick={() => setShowPermissionsHelp(!showPermissionsHelp)}
-            className={`p-2.5 rounded-xl transition-all ${showPermissionsHelp ? 'bg-[#007AFF] text-white shadow-md' : 'bg-white text-gray-400 hover:text-gray-600 border border-gray-100 shadow-sm'}`}
-          >
-            <ShieldCheck size={20} />
-          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={goToStorageRoot}
+              title="כוננים חיצוניים (SD/USB)"
+              className="p-2.5 bg-white text-gray-400 hover:text-[#007AFF] border border-gray-100 rounded-xl shadow-sm transition-all"
+            >
+              <HardDrive size={20} />
+            </button>
+            <button 
+              onClick={() => setShowPermissionsHelp(!showPermissionsHelp)}
+              className={`p-2.5 rounded-xl transition-all ${showPermissionsHelp ? 'bg-[#007AFF] text-white shadow-md' : 'bg-white text-gray-400 hover:text-gray-600 border border-gray-100 shadow-sm'}`}
+            >
+              <ShieldCheck size={20} />
+            </button>
+          </div>
         </header>
 
         {/* Permission Help Panel */}
@@ -246,7 +285,7 @@ export default function App() {
                   <h2>אישור הרשאות ניהול קבצים</h2>
                 </div>
                 <p className="text-sm text-gray-500 leading-relaxed">
-                  כדי לשנות שמות של קבצים ותיקיות, אנדרואיד דורש אישור מיוחד. אם האפליקציה לא מצליחה לבצע שינויים, בצע את השלבים הבאים:
+                  כדי לשנות שמות בכרטיס זיכרון או OTG, אנדרואיד דורש אישור "ניהול כל הקבצים".
                 </p>
                 <div className="grid grid-cols-1 gap-2">
                   {[
@@ -279,25 +318,38 @@ export default function App() {
           {/* File Explorer Card */}
           <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
             <div className="p-6 border-b border-gray-50 flex items-center justify-between bg-gray-50/50">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-50 rounded-xl">
-                  <FolderOpen className="text-[#007AFF] w-5 h-5" />
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 bg-blue-50 rounded-xl shrink-0">
+                  {isAbsolute ? <HardDrive className="text-[#007AFF] w-5 h-5" /> : <Home className="text-[#007AFF] w-5 h-5" />}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">נתיב נוכחי</p>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                    {isAbsolute ? 'אחסון חיצוני' : 'אחסון פנימי'}
+                  </p>
                   <p className="text-xs font-semibold text-gray-700 truncate max-w-[180px]">
-                    {currentPath || 'שורש המכשיר'}
+                    {currentPath || (isAbsolute ? '/' : 'שורש')}
                   </p>
                 </div>
               </div>
-              {currentPath && (
-                <button 
-                  onClick={navigateUp}
-                  className="p-2.5 bg-white border border-gray-100 rounded-xl text-gray-400 hover:text-[#007AFF] hover:border-blue-100 transition-all shadow-sm"
-                >
-                  <ChevronLeft className="w-5 h-5 rotate-180" />
-                </button>
-              )}
+              <div className="flex gap-2">
+                {isAbsolute && (
+                  <button 
+                    onClick={goToHome}
+                    title="חזרה לאחסון פנימי"
+                    className="p-2.5 bg-white border border-gray-100 rounded-xl text-gray-400 hover:text-[#007AFF] transition-all shadow-sm"
+                  >
+                    <Home size={18} />
+                  </button>
+                )}
+                {currentPath && currentPath !== '/' && (
+                  <button 
+                    onClick={navigateUp}
+                    className="p-2.5 bg-white border border-gray-100 rounded-xl text-gray-400 hover:text-[#007AFF] transition-all shadow-sm"
+                  >
+                    <ChevronLeft className="w-5 h-5 rotate-180" />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="h-[380px] overflow-y-auto custom-scrollbar bg-white">
@@ -313,7 +365,7 @@ export default function App() {
                       key={idx}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
-                      onClick={() => file.isDirectory && loadDirectory(file.path)}
+                      onClick={() => file.isDirectory && loadDirectory(file.path, isAbsolute)}
                       className={`p-4 flex items-center justify-between hover:bg-gray-50/80 transition-colors group ${file.isDirectory ? 'cursor-pointer' : ''}`}
                     >
                       <div className="flex items-center gap-4 min-w-0">
@@ -391,7 +443,7 @@ export default function App() {
           </div>
           <div className="flex items-center justify-center gap-2 text-gray-400">
             <Info size={12} />
-            <p className="text-[10px] font-medium">האפליקציה משנה קבצים ישירות. מומלץ לגבות מידע חשוב.</p>
+            <p className="text-[10px] font-medium">תומך בכרטיסי זיכרון ו-OTG דרך כפתור הכוננים.</p>
           </div>
         </footer>
 
