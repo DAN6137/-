@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   FolderOpen, 
   FileAudio, 
@@ -7,567 +7,358 @@ import {
   AlertCircle, 
   Play, 
   ArrowRightLeft,
-  FileText,
   Trash2,
-  ExternalLink,
-  Download,
-  Crown,
   Settings,
-  Package,
-  Github,
-  Share2,
-  Save
+  Crown,
+  ChevronLeft,
+  ShieldCheck,
+  Info
 } from 'lucide-react';
-import { motion } from 'motion/react';
-import { reverseHebrewInString, containsHebrew } from './utils/hebrew';
-import { Filesystem, Directory, PermissionStatus } from '@capacitor/filesystem';
-import { Share } from '@capacitor/share';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Device } from '@capacitor/device';
 
-interface FileItem {
+// --- Utils ---
+const containsHebrew = (str: string) => /[\u0590-\u05FF]/.test(str);
+
+const reverseHebrewInString = (str: string) => {
+  const hebrewRegex = /[\u0590-\u05FF]+/g;
+  return str.replace(hebrewRegex, (match) => match.split('').reverse().join(''));
+};
+
+// --- Types ---
+interface FileEntry {
   name: string;
-  newName: string;
-  handle?: FileSystemFileHandle;
-  file?: File;
-  status: 'pending' | 'success' | 'error';
-  error?: string;
-  blob?: Blob;
+  path: string;
+  isDirectory: boolean;
+  hasHebrew: boolean;
 }
 
 export default function App() {
-  const [files, setFiles] = useState<FileItem[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [directoryHandle, setDirectoryHandle] = useState<FileSystemDirectoryHandle | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [isInIframe, setIsInIframe] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
-  const [isNativeApp, setIsNativeApp] = useState(false);
-  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null);
-  const [appVersion] = useState('1.3.0-pro-mode');
+  // State
   const [currentPath, setCurrentPath] = useState('');
-  const [nativeFiles, setNativeFiles] = useState<{name: string, isDirectory: boolean}[]>([]);
-  const [githubToken, setGithubToken] = useState('');
-  const [buildStatus, setBuildStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [showBuildSettings, setShowBuildSettings] = useState(false);
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [platform, setPlatform] = useState<'web' | 'android' | 'ios'>('web');
+  const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<string>('unknown');
 
+  // Initialization
   useEffect(() => {
-    setIsInIframe(window.self !== window.top);
-    
-    const checkPlatform = async () => {
+    const init = async () => {
       const info = await Device.getInfo();
-      setIsMobile(info.platform === 'android' || info.platform === 'ios');
-      setIsNativeApp(info.platform !== 'web');
+      setPlatform(info.platform as any);
       
       if (info.platform === 'android') {
-        // Start at root for Android
-        setCurrentPath('');
         checkPermissions();
+        loadDirectory('');
       }
     };
-    checkPlatform();
-
-    // Set document direction to RTL for Hebrew
+    init();
     document.documentElement.dir = 'rtl';
   }, []);
 
+  // Logging
+  const addLog = (msg: string) => {
+    setLogs(prev => [msg, ...prev].slice(0, 30));
+  };
+
+  // Permissions
   const checkPermissions = async () => {
     try {
       const status = await Filesystem.checkPermissions();
-      setPermissionStatus(status);
-      addLog(`מצב הרשאות: ${status.publicStorage}`);
-    } catch (err) {
-      console.error('Error checking permissions:', err);
-    }
-  };
-
-  const requestPermissions = async () => {
-    try {
-      addLog("מבקש הרשאות אחסון...");
-      const status = await Filesystem.requestPermissions();
-      setPermissionStatus(status);
-      addLog(`תוצאת בקשה: ${status.publicStorage}`);
-      
+      setPermissionStatus(status.publicStorage);
       if (status.publicStorage !== 'granted') {
-        addLog("⚠️ הרשאת אחסון לא אושרה. ייתכן שיהיה עליך לאשר ידנית בהגדרות.");
+        addLog("⚠️ חסרות הרשאות אחסון בסיסיות");
       }
-    } catch (err) {
-      addLog(`❌ שגיאה בבקשת הרשאות: ${err instanceof Error ? err.message : 'נכשל'}`);
-    }
-  };
-
-  const addLog = (msg: string) => {
-    setLogs(prev => [msg, ...prev].slice(0, 50));
-  };
-
-  const handleOpenInNewTab = () => {
-    window.open(window.location.href, '_blank');
-  };
-
-  const handleSelectFolder = async () => {
-    const forceMobile = isMobile || !('showDirectoryPicker' in window);
-    
-    if (isInIframe || forceMobile) {
-      addLog("📱 מצב טלפון: בוחרים את כל הקבצים בבת אחת...");
-      handleSelectFiles();
-      return;
-    }
-
-    try {
-      // @ts-ignore
-      const handle = await window.showDirectoryPicker({
-        mode: 'readwrite'
-      });
-      setDirectoryHandle(handle);
-      addLog(`נבחרה תיקייה: ${handle.name}`);
-
-      const fileList: FileItem[] = [];
-      // @ts-ignore
-      for await (const entry of handle.values()) {
-        if (entry.kind === 'file') {
-          const name = entry.name;
-          if (containsHebrew(name)) {
-            fileList.push({
-              name,
-              newName: reverseHebrewInString(name),
-              handle: entry as FileSystemFileHandle,
-              status: 'pending'
-            });
-          }
-        }
-      }
-      setFiles(fileList);
-      addLog(`נמצאו ${fileList.length} קבצים עם שמות בעברית.`);
     } catch (err) {
       console.error(err);
-      addLog(`שגיאה: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
     }
   };
 
-  const handleSelectFiles = async () => {
-    if (isInIframe || isMobile || !('showOpenFilePicker' in window)) {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.onchange = (e) => {
-        const selectedFiles = (e.target as HTMLInputElement).files;
-        if (selectedFiles) {
-          const fileList: FileItem[] = Array.from(selectedFiles).map(file => ({
-            name: file.name,
-            newName: reverseHebrewInString(file.name),
-            file: file,
-            status: 'pending'
-          }));
-          setFiles(prev => [...prev, ...fileList]);
-          addLog(`נוספו ${selectedFiles.length} קבצים.`);
-        }
-      };
-      input.click();
-      return;
-    }
-
+  const requestBasicPermissions = async () => {
     try {
-      // @ts-ignore
-      const handles = await window.showOpenFilePicker({
-        multiple: true,
-        mode: 'readwrite'
-      });
-      
-      const fileList: FileItem[] = [];
-      for (const handle of handles) {
-        const name = handle.name;
-        fileList.push({
-          name,
-          newName: reverseHebrewInString(name),
-          handle: handle as FileSystemFileHandle,
-          status: 'pending'
-        });
-      }
-      setFiles(prev => [...prev, ...fileList]);
-      addLog(`נוספו ${handles.length} קבצים בודדים.`);
+      const status = await Filesystem.requestPermissions();
+      setPermissionStatus(status.publicStorage);
+      addLog(`הרשאות: ${status.publicStorage}`);
     } catch (err) {
-      console.error(err);
-      addLog(`שגיאה: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
+      addLog("❌ שגיאה בבקשת הרשאות");
     }
   };
 
-  const processFiles = async () => {
-    if (files.length === 0) return;
-    setIsProcessing(true);
-    addLog(`מתחיל עיבוד...`);
-
-    const updatedFiles = [...files];
-    for (let i = 0; i < updatedFiles.length; i++) {
-      const file = updatedFiles[i];
-      if (file.status === 'success') continue;
-
-      try {
-        if (file.handle) {
-          // @ts-ignore
-          if (typeof file.handle.move === 'function') {
-            // @ts-ignore
-            await file.handle.move(file.newName);
-            updatedFiles[i] = { ...file, status: 'success' };
-            addLog(`שונה שם: ${file.name} -> ${file.newName}`);
-          } else {
-            throw new Error('שינוי שם לא נתמך בדפדפן זה');
-          }
-        } else if (file.file) {
-          const blob = new Blob([file.file], { type: file.file.type });
-          updatedFiles[i] = { ...file, status: 'success', blob };
-          addLog(`עובד: ${file.name} (מוכן להורדה)`);
-        }
-      } catch (err) {
-        console.error(err);
-        updatedFiles[i] = { 
-          ...file, 
-          status: 'error', 
-          error: err instanceof Error ? err.message : 'נכשל' 
-        };
-        addLog(`נכשל: ${file.name}`);
-      }
-      setFiles([...updatedFiles]);
-    }
-    setIsProcessing(false);
-    addLog(`העיבוד הושלם.`);
-  };
-
-  const downloadFile = async (file: FileItem) => {
-    if (!file.blob) return;
-
-    if (isNativeApp) {
-      try {
-        const reader = new FileReader();
-        reader.readAsDataURL(file.blob);
-        reader.onloadend = async () => {
-          const base64Data = (reader.result as string).split(',')[1];
-          
-          const savedFile = await Filesystem.writeFile({
-            path: `MusicFix/${file.newName}`,
-            data: base64Data,
-            directory: Directory.Documents,
-            recursive: true
-          });
-
-          addLog(`✅ נשמר: ${file.newName}`);
-          
-          await Share.share({
-            title: 'שתף שיר מתוקן',
-            text: file.newName,
-            url: savedFile.uri,
-            dialogTitle: 'איפה לשמור/לשתף?',
-          });
-        };
-      } catch (err) {
-        addLog(`❌ שגיאה בשמירה: ${err instanceof Error ? err.message : 'נכשל'}`);
-      }
-      return;
-    }
-
-    const url = URL.createObjectURL(file.blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.newName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const loadNativeDirectory = async (path: string) => {
+  // File Operations
+  const loadDirectory = async (path: string) => {
     try {
       const result = await Filesystem.readdir({
         path: path,
         directory: Directory.ExternalStorage
       });
       
-      setNativeFiles(result.files.map(f => ({
+      const mappedFiles: FileEntry[] = result.files.map(f => ({
         name: f.name,
-        isDirectory: f.type === 'directory'
-      })));
+        path: path ? `${path}/${f.name}` : f.name,
+        isDirectory: f.type === 'directory',
+        hasHebrew: containsHebrew(f.name)
+      }));
+
+      // Sort: Directories first, then files
+      mappedFiles.sort((a, b) => {
+        if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
+        return a.isDirectory ? -1 : 1;
+      });
+
+      setFiles(mappedFiles);
       setCurrentPath(path);
-      addLog(`📂 נכנס לתיקייה: ${path || 'שורש'}`);
+      addLog(`📂 נכנס ל: ${path || 'שורש'}`);
     } catch (err) {
-      addLog(`❌ שגיאה בגישה לתיקייה: ${err instanceof Error ? err.message : 'נכשל'}`);
+      addLog(`❌ שגיאה בטעינה: ${err instanceof Error ? err.message : 'נכשל'}`);
       if (err instanceof Error && (err.message.includes('Permission') || err.message.includes('denied'))) {
-        addLog("💡 שים לב: באנדרואיד 11 ומעלה, חובה לאשר 'גישה לכל הקבצים' (All Files Access) בהגדרות האפליקציה.");
-        addLog("1. פתח הגדרות מכשיר > אפליקציות > מתקן שמות שירים");
-        addLog("2. הרשאות > קבצים ומדיה > סמן 'אפשר ניהול של כל הקבצים'");
+        setShowPermissionsHelp(true);
       }
     }
   };
 
-  const renameInPlace = async () => {
+  const handleRenameAll = async () => {
+    const hebrewFiles = files.filter(f => !f.isDirectory && f.hasHebrew);
+    if (hebrewFiles.length === 0) {
+      addLog("ℹ️ אין קבצים עם עברית בתיקייה זו");
+      return;
+    }
+
     setIsProcessing(true);
-    addLog(`🚀 מתחיל שינוי שמות במקום בתיקייה: ${currentPath}`);
+    addLog(`🚀 מתחיל שינוי שמות ל-${hebrewFiles.length} קבצים...`);
     
-    let count = 0;
-    for (const file of nativeFiles) {
-      if (!file.isDirectory && containsHebrew(file.name)) {
-        const newName = reverseHebrewInString(file.name);
-        try {
-          await Filesystem.rename({
-            from: `${currentPath}/${file.name}`,
-            to: `${currentPath}/${newName}`,
-            directory: Directory.ExternalStorage
-          });
-          count++;
-          addLog(`✅ שונה: ${file.name} -> ${newName}`);
-        } catch (err) {
-          addLog(`❌ נכשל בשינוי ${file.name}: ${err instanceof Error ? err.message : 'שגיאה'}`);
-        }
+    let successCount = 0;
+    for (const file of hebrewFiles) {
+      const newName = reverseHebrewInString(file.name);
+      const newPath = currentPath ? `${currentPath}/${newName}` : newName;
+      
+      try {
+        await Filesystem.rename({
+          from: file.path,
+          to: newPath,
+          directory: Directory.ExternalStorage
+        });
+        successCount++;
+        addLog(`✅ שונה: ${file.name}`);
+      } catch (err) {
+        addLog(`❌ נכשל: ${file.name}`);
+        console.error(err);
       }
     }
     
     setIsProcessing(false);
-    addLog(`✨ סיימתי! שונו ${count} קבצים ישירות בתיקייה.`);
-    loadNativeDirectory(currentPath);
+    addLog(`✨ סיימתי! שונו ${successCount} קבצים.`);
+    loadDirectory(currentPath); // Refresh
   };
 
   const navigateUp = () => {
+    if (!currentPath) return;
     const parts = currentPath.split('/');
     parts.pop();
-    loadNativeDirectory(parts.join('/'));
-  };
-
-  const saveAllFiles = async () => {
-    const successFiles = files.filter(f => f.status === 'success' && f.blob);
-    if (successFiles.length === 0) {
-      addLog('⚠️ אין קבצים מוכנים לשמירה');
-      return;
-    }
-
-    setIsProcessing(true);
-    addLog(`💾 שומר ${successFiles.length} קבצים...`);
-
-    for (const file of successFiles) {
-      await downloadFile(file);
-    }
-
-    setIsProcessing(false);
-    addLog('✨ כל הקבצים נשמרו בתיקיית Documents/MusicFix');
-  };
-
-  const clearFiles = () => {
-    setFiles([]);
-    setDirectoryHandle(null);
-    addLog('הרשימה נוקתה.');
-  };
-
-  const triggerGithubBuild = async () => {
-    if (!githubToken) {
-      addLog('❌ חסר קוד גישה (Token) של GitHub');
-      setBuildStatus('error');
-      return;
-    }
-
-    setBuildStatus('loading');
-    addLog('🚀 שולח בקשה לבניית APK ב-GitHub...');
-
-    try {
-      const response = await fetch('https://api.github.com/repos/DAN6137/YAEIR/actions/workflows/android.yml/dispatches', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/vnd.github+json',
-          'Authorization': `Bearer ${githubToken}`,
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ref: 'main',
-        }),
-      });
-
-      if (response.ok) {
-        setBuildStatus('success');
-        addLog('✅ הבקשה התקבלה! הבנייה התחילה ב-GitHub.');
-      } else {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'נכשל לשלוח בקשה');
-      }
-    } catch (err) {
-      console.error(err);
-      setBuildStatus('error');
-      addLog(`❌ שגיאה בבנייה: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
-    }
+    loadDirectory(parts.join('/'));
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-8 flex flex-col items-center font-sans" dir="rtl">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-4xl hardware-card overflow-hidden"
-      >
+    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-[#00ff9d] selection:text-black" dir="rtl">
+      <div className="max-w-2xl mx-auto p-4 md:p-8">
+        
         {/* Header */}
-        <div className="p-6 border-b border-[#333] flex items-center justify-between bg-[#1a1a1a]">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-[#00ff9d22] rounded-lg">
-              <ArrowRightLeft className="text-[#00ff9d] w-6 h-6" />
+        <header className="mb-8 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-[#00ff9d] rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(0,255,157,0.4)]">
+              <ArrowRightLeft className="text-black w-7 h-7" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">מתקן שמות שירים</h1>
-              <div className="flex items-center gap-1 text-[#00ff9d] text-[10px] font-bold mt-1">
+              <h1 className="text-2xl font-black tracking-tighter uppercase italic">Hebrew Fixer <span className="text-[#00ff9d]">PRO</span></h1>
+              <div className="flex items-center gap-1 text-[10px] font-bold text-[#00ff9d] opacity-80">
                 <Crown size={10} />
-                <span>מוקדש ליאיר המלך</span>
+                <span>גרסת יאיר המלך 2.0</span>
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={() => setShowBuildSettings(!showBuildSettings)}
-              className={`p-2 rounded-lg transition-colors ${showBuildSettings ? 'bg-[#00ff9d] text-black' : 'bg-[#333] text-white hover:bg-[#444]'}`}
-            >
-              <Settings size={20} />
-            </button>
-            <span className={`status-dot ${directoryHandle ? 'status-online' : 'status-offline'}`} />
-          </div>
-        </div>
-
-        {/* Build Settings Panel */}
-        {showBuildSettings && (
-          <motion.div 
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            className="bg-[#111] border-b border-[#333] p-6"
+          <button 
+            onClick={() => setShowPermissionsHelp(!showPermissionsHelp)}
+            className={`p-3 rounded-xl transition-all ${showPermissionsHelp ? 'bg-[#00ff9d] text-black' : 'bg-[#111] text-white hover:bg-[#222]'}`}
           >
-            <div className="flex items-center gap-2 mb-4 text-[#00ff9d]">
-              <Package size={20} />
-              <h2 className="font-bold">אריזת אפליקציה (Android APK)</h2>
-            </div>
-            <div className="space-y-4 max-w-2xl">
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] uppercase tracking-widest opacity-50 text-right">GitHub Access Token</label>
-                <div className="flex gap-2">
-                  <input 
-                    type="password" 
-                    value={githubToken}
-                    onChange={(e) => setGithubToken(e.target.value)}
-                    placeholder="הדבק כאן את ה-Token שלך..."
-                    className="flex-1 bg-black border border-[#333] rounded px-3 py-2 text-sm font-mono text-[#00ff9d] outline-none text-right"
-                  />
-                  <button 
-                    onClick={triggerGithubBuild}
-                    disabled={buildStatus === 'loading'}
-                    className="px-6 rounded font-bold bg-[#00ff9d] text-black hover:bg-[#00cc7e] disabled:bg-gray-800"
-                  >
-                    בנה APK
-                  </button>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
+            <ShieldCheck size={20} />
+          </button>
+        </header>
 
-        {/* Main Controls */}
-        <div className="p-6">
-          {isNativeApp ? (
-            <div className="space-y-4">
-              <div className="p-4 bg-[#1a1a1a] border border-[#333] rounded-xl">
-                <h3 className="text-sm font-bold mb-2 flex items-center gap-2">
-                  <FolderOpen size={18} className="text-blue-400" />
-                  סייר קבצים (שינוי שמות במקום)
-                </h3>
-                <div className="text-[10px] text-gray-400 mb-3 text-right">
-                  נתיב נוכחי: <span className="font-mono text-blue-300">{currentPath || 'שורש'}</span>
+        {/* Permission Help Panel */}
+        <AnimatePresence>
+          {showPermissionsHelp && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden mb-6"
+            >
+              <div className="bg-[#111] border border-amber-500/30 rounded-2xl p-6 space-y-4">
+                <div className="flex items-center gap-2 text-amber-400 font-bold">
+                  <AlertCircle size={20} />
+                  <h2>פתרון בעיית הרשאות (אנדרואיד 11+)</h2>
                 </div>
-                
-                <div className="flex gap-2 mb-4 justify-end">
-                  {currentPath && (
-                    <button onClick={navigateUp} className="px-3 py-1 bg-[#333] rounded-lg text-xs">תיקייה למעלה</button>
-                  )}
-                  <button onClick={() => loadNativeDirectory('')} className="px-3 py-1 bg-[#333] rounded-lg text-xs">חזור לשורש</button>
-                </div>
-
-                <div className="max-h-[250px] overflow-y-auto border border-[#222] rounded-lg bg-[#0a0a0a] mb-4 custom-scrollbar">
-                  {nativeFiles.map((file, idx) => (
-                    <div 
-                      key={idx}
-                      onClick={() => file.isDirectory && loadNativeDirectory(`${currentPath ? currentPath + '/' : ''}${file.name}`)}
-                      className={`p-2 border-b border-[#111] flex items-center justify-between gap-2 text-xs ${file.isDirectory ? 'cursor-pointer text-blue-200' : 'text-gray-400'}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        {file.isDirectory ? <FolderOpen size={14} className="text-blue-400" /> : <FileAudio size={14} className="text-gray-500" />}
-                        <span className="truncate">{file.name}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <button 
-                  onClick={renameInPlace}
-                  disabled={isProcessing || !nativeFiles.some(f => !f.isDirectory && containsHebrew(f.name))}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 rounded-xl font-bold flex items-center justify-center gap-2"
-                >
-                  <ArrowRightLeft size={20} />
-                  שנה שמות לכל השירים בתיקייה זו
-                </button>
-
-                {/* Android Permission Help */}
-                <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-[11px] text-amber-200">
-                  <div className="font-bold flex items-center gap-2 mb-1">
-                    <AlertCircle size={14} />
-                    טיפול בהרשאות (אנדרואיד)
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  אנדרואיד דורש אישור מיוחד כדי לאפשר לאפליקציה לשנות שמות של קבצים. אם האפליקציה לא עובדת, בצע את הצעדים הבאים:
+                </p>
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3 bg-black/40 p-3 rounded-xl border border-white/5">
+                    <div className="bg-amber-500 text-black w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">1</div>
+                    <p className="text-xs">כנס ל<b>הגדרות הטלפון</b> {'>'} <b>אפליקציות</b></p>
                   </div>
-                  <p className="mb-2 text-right">אם האפליקציה לא מצליחה לשנות שמות, עליך לאשר "גישה לכל הקבצים":</p>
-                  <ol className="list-decimal list-inside space-y-1 opacity-80 text-right">
-                    <li>לחץ על "בקש הרשאות" למטה</li>
-                    <li>אם זה לא עוזר, פתח את הגדרות האפליקציה בטלפון</li>
-                    <li>כנס ל"הרשאות" -{'>'} "קבצים ומדיה"</li>
-                    <li>בחר ב-"אפשר ניהול של כל הקבצים"</li>
-                  </ol>
-                  <button 
-                    onClick={requestPermissions}
-                    className="mt-3 w-full py-2 bg-amber-600 hover:bg-amber-500 text-black font-bold rounded-lg transition-colors"
-                  >
-                    בקש הרשאות בסיסיות
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="md:col-span-2 space-y-6">
-                <div className="flex flex-wrap gap-3">
-                  <button onClick={handleSelectFolder} className="btn-primary flex items-center gap-2">בחר תיקייה</button>
-                  <button onClick={handleSelectFiles} className="btn-secondary flex items-center gap-2">בחר קבצים</button>
-                </div>
-                <div className="lcd-display h-[400px] overflow-y-auto custom-scrollbar">
-                  {files.map((file, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-2 border-b border-[#00ff9d11]">
-                      <div className="flex-1 min-w-0 pl-4 text-right">
-                        <div className="text-[10px] opacity-40 truncate">{file.name}</div>
-                        <div className="text-sm font-bold truncate text-[#00ff9d]">{file.newName}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-6">
-                <div className="hardware-card p-4 bg-[#0a0a0a]">
-                  <h3 className="text-[10px] font-mono uppercase tracking-widest mb-3 opacity-50">יומן מערכת</h3>
-                  <div className="h-[200px] overflow-y-auto font-mono text-[10px] space-y-1 text-[#00ff9d88] text-right">
-                    {logs.map((log, i) => (
-                      <div key={i} className="border-r border-[#00ff9d33] pr-2">{`${log} <`}</div>
-                    ))}
+                  <div className="flex items-start gap-3 bg-black/40 p-3 rounded-xl border border-white/5">
+                    <div className="bg-amber-500 text-black w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">2</div>
+                    <p className="text-xs">חפש את <b>Hebrew Name Fixer</b></p>
+                  </div>
+                  <div className="flex items-start gap-3 bg-black/40 p-3 rounded-xl border border-white/5">
+                    <div className="bg-amber-500 text-black w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">3</div>
+                    <p className="text-xs">כנס ל<b>הרשאות</b> {'>'} <b>קבצים ומדיה</b></p>
+                  </div>
+                  <div className="flex items-start gap-3 bg-black/40 p-3 rounded-xl border border-white/5">
+                    <div className="bg-amber-500 text-black w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">4</div>
+                    <p className="text-xs font-bold text-white">סמן את האופציה: "אפשר ניהול של כל הקבצים"</p>
                   </div>
                 </div>
                 <button 
-                  onClick={processFiles}
-                  disabled={isProcessing || files.length === 0}
-                  className="w-full py-4 rounded-lg bg-[#00ff9d] text-black font-bold text-lg"
+                  onClick={requestBasicPermissions}
+                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-400 transition-colors flex items-center justify-center gap-2"
                 >
-                  התחל שינוי שם
+                  <ShieldCheck size={18} />
+                  בקש הרשאות בסיסיות (נסה קודם)
                 </button>
               </div>
-            </div>
+            </motion.div>
           )}
-        </div>
+        </AnimatePresence>
+
+        {/* Main Interface */}
+        <main className="space-y-6">
+          
+          {/* File Explorer */}
+          <div className="bg-[#111] rounded-3xl border border-white/5 overflow-hidden shadow-2xl">
+            <div className="p-5 border-b border-white/5 flex items-center justify-between bg-white/5">
+              <div className="flex items-center gap-3">
+                <FolderOpen className="text-[#00ff9d] w-5 h-5" />
+                <span className="text-xs font-mono text-gray-400 truncate max-w-[200px]">
+                  {currentPath || 'שורש המכשיר'}
+                </span>
+              </div>
+              {currentPath && (
+                <button 
+                  onClick={navigateUp}
+                  className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                >
+                  <ChevronLeft className="w-5 h-5 rotate-180" />
+                </button>
+              )}
+            </div>
+
+            <div className="h-[350px] overflow-y-auto custom-scrollbar">
+              {files.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center opacity-20">
+                  <RotateCcw size={48} className="animate-spin-slow mb-4" />
+                  <p className="text-sm">טוען קבצים...</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-white/5">
+                  {files.map((file, idx) => (
+                    <motion.div 
+                      key={idx}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      onClick={() => file.isDirectory && loadDirectory(file.path)}
+                      className={`p-4 flex items-center justify-between hover:bg-white/5 transition-colors group ${file.isDirectory ? 'cursor-pointer' : ''}`}
+                    >
+                      <div className="flex items-center gap-4 min-w-0">
+                        <div className={`p-2 rounded-xl ${file.isDirectory ? 'bg-blue-500/10 text-blue-400' : 'bg-white/5 text-gray-500'}`}>
+                          {file.isDirectory ? <FolderOpen size={18} /> : <FileAudio size={18} />}
+                        </div>
+                        <div className="truncate">
+                          <p className={`text-sm font-medium truncate ${file.isDirectory ? 'text-blue-100' : 'text-gray-300'}`}>
+                            {file.name}
+                          </p>
+                          {file.hasHebrew && !file.isDirectory && (
+                            <p className="text-[10px] text-[#00ff9d] font-bold mt-0.5">עברית מזוהה ✨</p>
+                          )}
+                        </div>
+                      </div>
+                      {file.isDirectory && <ChevronLeft size={14} className="text-gray-600 group-hover:text-white transition-colors" />}
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-5 bg-white/5">
+              <button 
+                onClick={handleRenameAll}
+                disabled={isProcessing || !files.some(f => !f.isDirectory && f.hasHebrew)}
+                className="w-full py-4 bg-[#00ff9d] text-black font-black rounded-2xl flex items-center justify-center gap-3 shadow-[0_0_30px_rgba(0,255,157,0.2)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-30 disabled:grayscale disabled:scale-100"
+              >
+                {isProcessing ? <RotateCcw className="animate-spin" /> : <Play fill="currentColor" size={20} />}
+                תקן את כל השמות בתיקייה זו
+              </button>
+            </div>
+          </div>
+
+          {/* Logs */}
+          <div className="bg-[#111] rounded-2xl border border-white/5 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[10px] uppercase tracking-widest font-bold text-gray-500">יומן פעילות</h3>
+              <button onClick={() => setLogs([])} className="text-gray-600 hover:text-red-400 transition-colors">
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <div className="h-32 overflow-y-auto font-mono text-[10px] space-y-1.5 custom-scrollbar">
+              {logs.length === 0 && <p className="text-gray-700 italic">ממתין לפעולה...</p>}
+              {logs.map((log, i) => (
+                <div key={i} className="flex items-start gap-2 text-gray-400">
+                  <span className="text-[#00ff9d] shrink-0">›</span>
+                  <span className="text-right">{log}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </main>
 
         {/* Footer */}
-        <div className="p-4 bg-[#0a0a0a] border-t border-[#333] flex justify-between items-center text-[10px] font-mono opacity-50">
-          <div>מצב: {isNativeApp ? 'אנדרואיד' : 'גישה_מלאה'} | גרסה: {appVersion}</div>
-        </div>
-      </motion.div>
+        <footer className="mt-8 text-center space-y-2">
+          <p className="text-[10px] text-gray-600 font-mono uppercase tracking-widest">
+            Platform: {platform} | Status: {permissionStatus}
+          </p>
+          <div className="flex items-center justify-center gap-2 text-gray-700">
+            <Info size={12} />
+            <p className="text-[9px]">האפליקציה משנה קבצים ישירות בזיכרון המכשיר. השתמש באחריות.</p>
+          </div>
+        </footer>
+
+      </div>
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #222;
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: #333;
+        }
+        @keyframes spin-slow {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .animate-spin-slow {
+          animation: spin-slow 8s linear infinite;
+        }
+      `}</style>
     </div>
   );
 }
