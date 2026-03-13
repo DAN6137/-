@@ -37,21 +37,11 @@ jobs:
           fi
           npx cap sync android
           
-      - name: Inject Permissions
-        run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />' $MANIFEST
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />' $MANIFEST
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />' $MANIFEST
-            sed -i 's/<application/<application android:requestLegacyExternalStorage="true"/' $MANIFEST
-          fi
-
       - name: Build Android APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
