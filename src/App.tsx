@@ -14,8 +14,8 @@ import {
   HardDrive,
   Home,
   Crown,
-  Terminal,
-  Edit3
+  Edit3,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -45,13 +45,12 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [platform, setPlatform] = useState<'web' | 'android' | 'ios'>('web');
-  const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<string>('unknown');
-  const [allFilesPermission, setAllFilesPermission] = useState<boolean>(false);
   const [connectedDrives, setConnectedDrives] = useState<{name: string, path: string}[]>([]);
-  const [showTerminal, setShowTerminal] = useState(false);
   const [manualPath, setManualPath] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
+  const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Progress State
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
@@ -65,15 +64,28 @@ export default function App() {
       setPlatform(info.platform as any);
       
       if (info.platform === 'android') {
-        checkPermissions();
-        checkAllFilesAccess();
-        scanDrives();
+        refreshAll();
         loadDirectory('', false);
       }
     };
     init();
+
+    // Auto refresh when returning to app
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAll();
+      }
+    };
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    
     document.documentElement.dir = 'rtl';
+    return () => window.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
+
+  const refreshAll = () => {
+    checkPermissions();
+    scanDrives();
+  };
 
   // Scan for connected drives
   const scanDrives = async () => {
@@ -92,17 +104,6 @@ export default function App() {
     }
   };
 
-  // Check if MANAGE_EXTERNAL_STORAGE is granted
-  const checkAllFilesAccess = async () => {
-    try {
-      // Attempt to list a sensitive directory to test permission
-      await Filesystem.readdir({ path: '/storage/emulated/0/Android/data' });
-      setAllFilesPermission(true);
-    } catch (e) {
-      setAllFilesPermission(false);
-    }
-  };
-
   // Logging
   const addLog = (msg: string) => {
     setLogs(prev => [msg, ...prev].slice(0, 50));
@@ -113,7 +114,6 @@ export default function App() {
     try {
       const status = await Filesystem.checkPermissions();
       setPermissionStatus(status.publicStorage);
-      checkAllFilesAccess();
       return status.publicStorage;
     } catch (err) {
       console.error(err);
@@ -123,13 +123,15 @@ export default function App() {
 
   const requestPermissions = async () => {
     try {
-      addLog("🛡️ פותח הגדרות הרשאות מערכת...");
-      await Filesystem.requestPermissions();
-      const status = await checkPermissions();
-      if (status === 'granted') {
-        addLog("✅ הרשאה התקבלה!");
-        setShowPermissionsHelp(false);
+      addLog("🛡️ מבקש הרשאות גישה לקבצים...");
+      const status = await Filesystem.requestPermissions();
+      setPermissionStatus(status.publicStorage);
+      if (status.publicStorage === 'granted') {
+        addLog("✅ הרשאה התקבלה! סורק כוננים...");
+        scanDrives();
         loadDirectory(currentPath, isAbsolute);
+      } else {
+        addLog("⚠️ הרשאה נדחתה. לא ניתן לגשת לקבצים.");
       }
     } catch (err) {
       addLog("❌ שגיאה בבקשת הרשאות");
@@ -161,6 +163,7 @@ export default function App() {
       setFiles(mappedFiles);
       setCurrentPath(path);
       setIsAbsolute(absolute);
+      setSearchQuery(''); // Clear search on navigation
       addLog(`📂 נכנס ל: ${path || (absolute ? '/' : 'שורש פנימי')}`);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'נכשל';
@@ -321,6 +324,10 @@ export default function App() {
     setShowManualInput(false);
   };
 
+  const filteredFiles = files.filter(f => 
+    f.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-[#007AFF] selection:text-white" dir="rtl">
       <div className="max-w-2xl mx-auto p-4 md:p-8">
@@ -344,7 +351,7 @@ export default function App() {
                 <Crown className="text-yellow-200 w-16 h-16 fill-yellow-200 drop-shadow-xl opacity-50" />
               </div>
             </div>
-            <div className="mt-4 text-xs font-black text-yellow-600 uppercase tracking-[0.4em] bg-yellow-100 px-4 py-1 rounded-full">KING EDITION 6.0 - SPECIAL FOR YAIR</div>
+            <div className="mt-4 text-xs font-black text-yellow-600 uppercase tracking-[0.4em] bg-yellow-100 px-4 py-1 rounded-full">KING EXPLORER 8.0 - FULL ACCESS</div>
           </motion.div>
         </div>
 
@@ -359,13 +366,15 @@ export default function App() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button 
-              onClick={() => setShowTerminal(!showTerminal)}
-              title="טרמינל המלך (ADB)"
-              className={`p-3 rounded-2xl transition-all ${showTerminal ? 'bg-black text-green-400 shadow-lg' : 'bg-white text-gray-400 border border-gray-100 shadow-sm'}`}
-            >
-              <Terminal size={24} />
-            </button>
+            {permissionStatus !== 'granted' && (
+              <button 
+                onClick={requestPermissions}
+                title="בקש הרשאות גישה"
+                className="p-3 bg-red-500 text-white rounded-2xl shadow-lg shadow-red-500/20 animate-pulse"
+              >
+                <ShieldCheck size={24} />
+              </button>
+            )}
             <button 
               onClick={() => setShowManualInput(!showManualInput)}
               title="הזנת נתיב ידנית"
@@ -375,80 +384,69 @@ export default function App() {
             </button>
             <button 
               onClick={() => { scanDrives(); setShowManualInput(false); }}
-              title="רשימת כוננים"
+              title="רענן כוננים"
               className="p-3 bg-white text-gray-400 hover:text-[#007AFF] border border-gray-100 rounded-2xl shadow-sm transition-all"
             >
-              <HardDrive size={24} />
-            </button>
-            <button 
-              onClick={() => setShowPermissionsHelp(!showPermissionsHelp)}
-              className={`p-3 rounded-2xl transition-all ${showPermissionsHelp ? 'bg-[#007AFF] text-white shadow-lg' : 'bg-white text-gray-400 hover:text-gray-600 border border-gray-100 shadow-sm'}`}
-            >
-              <ShieldCheck size={24} />
+              <RefreshCw size={24} />
             </button>
           </div>
         </header>
 
-        {/* King's Terminal (ADB Emulator UI) */}
-        <AnimatePresence>
-          {showTerminal && (
-            <motion.div 
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden mb-6"
-            >
-              <div className="bg-black rounded-[32px] p-6 shadow-2xl border-4 border-gray-800 font-mono">
-                <div className="flex items-center justify-between mb-4 border-b border-gray-800 pb-2">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full bg-red-500" />
-                    <div className="w-3 h-3 rounded-full bg-yellow-500" />
-                    <div className="w-3 h-3 rounded-full bg-green-500" />
-                    <span className="text-green-400 text-[10px] font-bold mr-2">KING_SHELL v1.0</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${allFilesPermission ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className="text-[9px] text-gray-500">{allFilesPermission ? 'ADB_GRANTED' : 'ADB_REQUIRED'}</span>
-                  </div>
-                </div>
-                
-                <div className="space-y-3 text-[11px]">
-                  <p className="text-blue-400">$ whoami</p>
-                  <p className="text-white">yair_the_king</p>
-                  <p className="text-blue-400">$ check_adb_status</p>
-                  <p className={allFilesPermission ? "text-green-400" : "text-red-400"}>
-                    {allFilesPermission ? ">> STATUS: PERMISSION GRANTED (KING MODE ACTIVE)" : ">> STATUS: ACCESS DENIED. RUN ADB COMMAND FROM PC."}
-                  </p>
-                  
-                  {!allFilesPermission && (
-                    <div className="mt-4 p-3 bg-gray-900 rounded-xl border border-gray-800">
-                      <p className="text-yellow-500 mb-2 font-bold underline">איך להפעיל מהטלפון (ללא מחשב):</p>
-                      <ol className="list-decimal list-inside text-gray-400 space-y-1">
-                        <li>הפעל "ניפוי באגים אלחוטי" בהגדרות מפתח.</li>
-                        <li>הורד אפליקציית "LADB" מהחנות.</li>
-                        <li>העתק את הפקודה מהחלונית הכחולה לתוך ה-LADB.</li>
-                        <li>חזור לכאן - הסטטוס יהפוך לירוק!</li>
-                      </ol>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         {/* Drives Manager */}
-        <div className="mb-6 flex flex-wrap gap-2">
-          {connectedDrives.map((drive, i) => (
-            <button
-              key={i}
-              onClick={() => loadDirectory(drive.path, true)}
-              className={`px-4 py-2 rounded-full text-[10px] font-black transition-all flex items-center gap-2 ${currentPath.startsWith(drive.path) ? 'bg-[#007AFF] text-white shadow-md' : 'bg-white text-gray-500 border border-gray-100'}`}
+        <div className="mb-6 overflow-x-auto pb-2 scrollbar-hide">
+          <div className="flex gap-2 min-w-max">
+            {connectedDrives.map((drive, i) => (
+              <button
+                key={i}
+                onClick={() => loadDirectory(drive.path, true)}
+                className={`px-5 py-3 rounded-2xl text-xs font-black transition-all flex items-center gap-3 shadow-sm ${currentPath.startsWith(drive.path) ? 'bg-[#007AFF] text-white shadow-blue-500/20' : 'bg-white text-gray-500 border border-gray-100 hover:border-blue-200'}`}
+              >
+                <HardDrive size={16} className={currentPath.startsWith(drive.path) ? 'text-white' : 'text-[#007AFF]'} />
+                {drive.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Search & Breadcrumbs */}
+        <div className="mb-6 space-y-4">
+          <div className="relative">
+            <input 
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="חפש קבצים או תיקיות..."
+              className="w-full bg-white border border-gray-100 rounded-2xl px-12 py-4 text-sm font-bold shadow-sm focus:border-blue-200 outline-none transition-all"
+            />
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
+              <RotateCcw size={18} className={isProcessing ? 'animate-spin' : ''} />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-hide text-[10px] font-black uppercase tracking-wider text-gray-400">
+            <button 
+              onClick={() => loadDirectory('', false)}
+              className="hover:text-[#007AFF] transition-colors shrink-0"
             >
-              <HardDrive size={12} />
-              {drive.name}
+              שורש
             </button>
-          ))}
+            {currentPath.split('/').filter(Boolean).map((part, i, arr) => (
+              <React.Fragment key={i}>
+                <span className="opacity-30">/</span>
+                <button 
+                  onClick={() => {
+                    const path = isAbsolute 
+                      ? '/' + arr.slice(0, i + 1).join('/')
+                      : arr.slice(0, i + 1).join('/');
+                    loadDirectory(path, isAbsolute);
+                  }}
+                  className="hover:text-[#007AFF] transition-colors shrink-0 max-w-[100px] truncate"
+                >
+                  {part}
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
         </div>
 
         {/* Manual Path Input */}
@@ -491,33 +489,17 @@ export default function App() {
               <div className="bg-white border-4 border-blue-50 rounded-[40px] p-8 shadow-xl space-y-6">
                 <div className="flex items-center gap-3 text-[#007AFF] font-black text-xl">
                   <AlertCircle size={24} />
-                  <h2>תיקון שגיאת "No UID" וגישה לכונן</h2>
+                  <h2>צריך הרשאות גישה לקבצים</h2>
                 </div>
                 <p className="text-sm text-gray-500 font-medium leading-relaxed">
-                  יאיר המלך, השגיאה שקיבלת ב-ADB קרתה כי שם החבילה היה שונה. הנה הפקודה המעודכנת והמדויקת בשבילך:
+                  כדי שנוכל לתקן את שמות השירים, אנחנו צריכים הרשאה לגשת לאחסון של הטלפון.
                 </p>
                 
-                {/* ADB Section */}
-                <div className="bg-gray-900 rounded-[24px] p-6 font-mono text-[11px] text-green-400 relative group border-2 border-gray-800">
-                  <div className="flex items-center justify-between mb-3 text-gray-400 border-b border-gray-800 pb-3">
-                    <div className="flex items-center gap-2">
-                      <Terminal size={14} />
-                      <span className="font-bold">פקודת ADB מעודכנת (העתק למחשב)</span>
-                    </div>
-                  </div>
-                  <code className="block break-all leading-loose select-all bg-black/30 p-3 rounded-xl">
-                    adb shell appops set com.yair.hebrewfixer MANAGE_EXTERNAL_STORAGE allow
-                  </code>
-                  <p className="mt-3 text-[9px] text-gray-500 italic">
-                    * שים לב: שם החבילה המדויק הוא com.yair.hebrewfixer
-                  </p>
-                </div>
-
                 <div className="grid grid-cols-1 gap-2">
                   {[
-                    "לחץ על הכפתור הכחול למטה",
-                    "חפש את Hebrew Name Fixer ברשימה",
-                    "סמן 'אפשר גישה לניהול כל הקבצים'"
+                    "לחץ על הכפתור למטה",
+                    "אפשר גישה לניהול כל הקבצים",
+                    "חזור לאפליקציה והמשך בתיקון"
                   ].map((step, i) => (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 p-3 rounded-2xl border border-gray-100">
                       <div className="bg-[#007AFF] text-white w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">{i+1}</div>
@@ -525,13 +507,21 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <button 
-                  onClick={requestPermissions}
-                  className="w-full py-3.5 bg-[#007AFF] text-white font-bold rounded-2xl hover:bg-[#0066D6] transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
-                >
-                  <ShieldCheck size={18} />
-                  פתח הגדרות הרשאות
-                </button>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={requestPermissions}
+                    className="flex-1 py-3.5 bg-[#007AFF] text-white font-bold rounded-2xl hover:bg-[#0066D6] transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
+                  >
+                    <ShieldCheck size={18} />
+                    בקש הרשאה
+                  </button>
+                  <button 
+                    onClick={() => setShowPermissionsHelp(false)}
+                    className="px-6 py-3.5 bg-gray-100 text-gray-500 font-bold rounded-2xl hover:bg-gray-200 transition-all"
+                  >
+                    סגור
+                  </button>
+                </div>
               </div>
             </motion.div>
           )}
@@ -604,15 +594,17 @@ export default function App() {
               </div>
             </div>
 
-            <div className="h-[380px] overflow-y-auto custom-scrollbar bg-white">
-              {files.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-300">
-                  <RotateCcw size={40} className="animate-spin-slow mb-4 opacity-20" />
-                  <p className="text-sm font-medium">טוען קבצים...</p>
+            <div className="h-[420px] overflow-y-auto custom-scrollbar bg-white">
+              {filteredFiles.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-gray-300 p-8 text-center">
+                  <FolderOpen size={48} className="mb-4 opacity-10" />
+                  <p className="text-sm font-bold text-gray-400">
+                    {searchQuery ? 'לא נמצאו קבצים התואמים לחיפוש' : 'התיקייה ריקה'}
+                  </p>
                 </div>
               ) : (
                 <div className="divide-y divide-gray-50">
-                  {files.map((file, idx) => (
+                  {filteredFiles.map((file, idx) => (
                     <motion.div 
                       key={idx}
                       initial={{ opacity: 0 }}
