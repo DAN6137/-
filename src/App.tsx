@@ -47,9 +47,12 @@ export default function App() {
   const [platform, setPlatform] = useState<'web' | 'android' | 'ios'>('web');
   const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<string>('unknown');
+  const [allFilesPermission, setAllFilesPermission] = useState<boolean>(false);
+  const [connectedDrives, setConnectedDrives] = useState<{name: string, path: string}[]>([]);
+  const [showTerminal, setShowTerminal] = useState(false);
   const [manualPath, setManualPath] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
-  
+
   // Progress State
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
   const totalFilesToProcess = useRef(0);
@@ -63,12 +66,42 @@ export default function App() {
       
       if (info.platform === 'android') {
         checkPermissions();
+        checkAllFilesAccess();
+        scanDrives();
         loadDirectory('', false);
       }
     };
     init();
     document.documentElement.dir = 'rtl';
   }, []);
+
+  // Scan for connected drives
+  const scanDrives = async () => {
+    try {
+      const result = await Filesystem.readdir({ path: '/storage' });
+      const drives = result.files
+        .filter(f => f.name !== 'self' && f.name !== 'emulated' && f.name !== 'container')
+        .map(f => ({ name: `כונן חיצוני (${f.name})`, path: `/storage/${f.name}` }));
+      
+      setConnectedDrives([
+        { name: 'אחסון פנימי', path: '/storage/emulated/0' },
+        ...drives
+      ]);
+    } catch (e) {
+      setConnectedDrives([{ name: 'אחסון פנימי', path: '/storage/emulated/0' }]);
+    }
+  };
+
+  // Check if MANAGE_EXTERNAL_STORAGE is granted
+  const checkAllFilesAccess = async () => {
+    try {
+      // Attempt to list a sensitive directory to test permission
+      await Filesystem.readdir({ path: '/storage/emulated/0/Android/data' });
+      setAllFilesPermission(true);
+    } catch (e) {
+      setAllFilesPermission(false);
+    }
+  };
 
   // Logging
   const addLog = (msg: string) => {
@@ -80,6 +113,7 @@ export default function App() {
     try {
       const status = await Filesystem.checkPermissions();
       setPermissionStatus(status.publicStorage);
+      checkAllFilesAccess();
       return status.publicStorage;
     } catch (err) {
       console.error(err);
@@ -292,54 +326,130 @@ export default function App() {
       <div className="max-w-2xl mx-auto p-4 md:p-8">
         
         {/* Dedication Header - KING THEME */}
-        <div className="mb-8 text-center">
+        <div className="mb-10 text-center">
           <motion.div 
-            initial={{ y: -20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            className="inline-flex flex-col items-center gap-1"
+            initial={{ y: -30, opacity: 0, scale: 0.8 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            transition={{ type: "spring", stiffness: 200, damping: 15 }}
+            className="inline-flex flex-col items-center gap-2"
           >
-            <div className="flex items-center gap-4 px-8 py-4 bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-400 rounded-3xl shadow-[0_10px_40px_rgba(234,179,8,0.3)] border-4 border-white">
-              <Crown className="text-white w-10 h-10 fill-white drop-shadow-md" />
-              <h2 className="text-4xl font-black text-white tracking-tighter drop-shadow-md">מוקדש ליאיר המלך</h2>
-              <Crown className="text-white w-10 h-10 fill-white drop-shadow-md" />
+            <div className="flex items-center gap-6 px-12 py-6 bg-gradient-to-br from-yellow-300 via-yellow-500 to-orange-500 rounded-[40px] shadow-[0_20px_50px_rgba(234,179,8,0.4)] border-8 border-white relative">
+              <div className="absolute -top-8 -right-8 rotate-12">
+                <Crown className="text-yellow-200 w-16 h-16 fill-yellow-200 drop-shadow-xl opacity-50" />
+              </div>
+              <Crown className="text-white w-14 h-14 fill-white drop-shadow-lg" />
+              <h2 className="text-5xl font-black text-white tracking-tighter drop-shadow-2xl">מוקדש ליאיר המלך</h2>
+              <Crown className="text-white w-14 h-14 fill-white drop-shadow-lg" />
+              <div className="absolute -bottom-8 -left-8 -rotate-12">
+                <Crown className="text-yellow-200 w-16 h-16 fill-yellow-200 drop-shadow-xl opacity-50" />
+              </div>
             </div>
-            <div className="mt-2 text-[10px] font-bold text-yellow-600 uppercase tracking-[0.3em]">Ultimate King Edition 5.0</div>
+            <div className="mt-4 text-xs font-black text-yellow-600 uppercase tracking-[0.4em] bg-yellow-100 px-4 py-1 rounded-full">KING EDITION 6.0 - SPECIAL FOR YAIR</div>
           </motion.div>
         </div>
 
         {/* App Header */}
         <header className="mb-10 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-gray-100">
-              <ArrowRightLeft className="text-[#007AFF] w-6 h-6" />
+            <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-md border border-gray-100">
+              <ArrowRightLeft className="text-[#007AFF] w-7 h-7" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-gray-900">מתקן שמות שירים</h1>
+              <h1 className="text-2xl font-black tracking-tight text-gray-900">מתקן שמות שירים</h1>
             </div>
           </div>
           <div className="flex gap-2">
             <button 
-              onClick={() => setShowManualInput(!showManualInput)}
-              title="הזנת נתיב ידנית"
-              className={`p-2.5 rounded-xl transition-all ${showManualInput ? 'bg-[#007AFF] text-white' : 'bg-white text-gray-400 border border-gray-100'}`}
+              onClick={() => setShowTerminal(!showTerminal)}
+              title="טרמינל המלך (ADB)"
+              className={`p-3 rounded-2xl transition-all ${showTerminal ? 'bg-black text-green-400 shadow-lg' : 'bg-white text-gray-400 border border-gray-100 shadow-sm'}`}
             >
-              <Edit3 size={20} />
+              <Terminal size={24} />
             </button>
             <button 
-              onClick={() => loadDirectory('/storage', true)}
-              title="כוננים חיצוניים (SD/USB)"
-              className="p-2.5 bg-white text-gray-400 hover:text-[#007AFF] border border-gray-100 rounded-xl shadow-sm transition-all"
+              onClick={() => setShowManualInput(!showManualInput)}
+              title="הזנת נתיב ידנית"
+              className={`p-3 rounded-2xl transition-all ${showManualInput ? 'bg-[#007AFF] text-white shadow-lg' : 'bg-white text-gray-400 border border-gray-100 shadow-sm'}`}
             >
-              <HardDrive size={20} />
+              <Edit3 size={24} />
+            </button>
+            <button 
+              onClick={() => { scanDrives(); setShowManualInput(false); }}
+              title="רשימת כוננים"
+              className="p-3 bg-white text-gray-400 hover:text-[#007AFF] border border-gray-100 rounded-2xl shadow-sm transition-all"
+            >
+              <HardDrive size={24} />
             </button>
             <button 
               onClick={() => setShowPermissionsHelp(!showPermissionsHelp)}
-              className={`p-2.5 rounded-xl transition-all ${showPermissionsHelp ? 'bg-[#007AFF] text-white shadow-md' : 'bg-white text-gray-400 hover:text-gray-600 border border-gray-100 shadow-sm'}`}
+              className={`p-3 rounded-2xl transition-all ${showPermissionsHelp ? 'bg-[#007AFF] text-white shadow-lg' : 'bg-white text-gray-400 hover:text-gray-600 border border-gray-100 shadow-sm'}`}
             >
-              <ShieldCheck size={20} />
+              <ShieldCheck size={24} />
             </button>
           </div>
         </header>
+
+        {/* King's Terminal (ADB Emulator UI) */}
+        <AnimatePresence>
+          {showTerminal && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden mb-6"
+            >
+              <div className="bg-black rounded-[32px] p-6 shadow-2xl border-4 border-gray-800 font-mono">
+                <div className="flex items-center justify-between mb-4 border-b border-gray-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-red-500" />
+                    <div className="w-3 h-3 rounded-full bg-yellow-500" />
+                    <div className="w-3 h-3 rounded-full bg-green-500" />
+                    <span className="text-green-400 text-[10px] font-bold mr-2">KING_SHELL v1.0</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${allFilesPermission ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className="text-[9px] text-gray-500">{allFilesPermission ? 'ADB_GRANTED' : 'ADB_REQUIRED'}</span>
+                  </div>
+                </div>
+                
+                <div className="space-y-3 text-[11px]">
+                  <p className="text-blue-400">$ whoami</p>
+                  <p className="text-white">yair_the_king</p>
+                  <p className="text-blue-400">$ check_adb_status</p>
+                  <p className={allFilesPermission ? "text-green-400" : "text-red-400"}>
+                    {allFilesPermission ? ">> STATUS: PERMISSION GRANTED (KING MODE ACTIVE)" : ">> STATUS: ACCESS DENIED. RUN ADB COMMAND FROM PC."}
+                  </p>
+                  
+                  {!allFilesPermission && (
+                    <div className="mt-4 p-3 bg-gray-900 rounded-xl border border-gray-800">
+                      <p className="text-yellow-500 mb-2 font-bold underline">איך להפעיל מהטלפון (ללא מחשב):</p>
+                      <ol className="list-decimal list-inside text-gray-400 space-y-1">
+                        <li>הפעל "ניפוי באגים אלחוטי" בהגדרות מפתח.</li>
+                        <li>הורד אפליקציית "LADB" מהחנות.</li>
+                        <li>העתק את הפקודה מהחלונית הכחולה לתוך ה-LADB.</li>
+                        <li>חזור לכאן - הסטטוס יהפוך לירוק!</li>
+                      </ol>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Drives Manager */}
+        <div className="mb-6 flex flex-wrap gap-2">
+          {connectedDrives.map((drive, i) => (
+            <button
+              key={i}
+              onClick={() => loadDirectory(drive.path, true)}
+              className={`px-4 py-2 rounded-full text-[10px] font-black transition-all flex items-center gap-2 ${currentPath.startsWith(drive.path) ? 'bg-[#007AFF] text-white shadow-md' : 'bg-white text-gray-500 border border-gray-100'}`}
+            >
+              <HardDrive size={12} />
+              {drive.name}
+            </button>
+          ))}
+        </div>
 
         {/* Manual Path Input */}
         <AnimatePresence>
@@ -350,17 +460,17 @@ export default function App() {
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden mb-6"
             >
-              <div className="bg-white p-4 rounded-3xl border border-gray-100 shadow-sm flex gap-2">
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-md flex gap-3">
                 <input 
                   type="text" 
                   value={manualPath}
                   onChange={(e) => setManualPath(e.target.value)}
-                  placeholder="הקלד נתיב (למשל /storage/emulated/0)"
-                  className="flex-1 bg-gray-50 border-none rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-blue-100 outline-none"
+                  placeholder="הקלד נתיב (למשל /storage/A1B2-C3D4)"
+                  className="flex-1 bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-4 text-sm font-bold focus:border-blue-200 outline-none transition-all"
                 />
                 <button 
                   onClick={handleManualPathSubmit}
-                  className="bg-[#007AFF] text-white px-6 rounded-2xl font-bold text-sm"
+                  className="bg-[#007AFF] text-white px-8 rounded-2xl font-black text-sm shadow-lg shadow-blue-500/20"
                 >
                   עבור
                 </button>
@@ -378,24 +488,29 @@ export default function App() {
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden mb-8"
             >
-              <div className="bg-white border-2 border-red-50 rounded-3xl p-6 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 text-red-500 font-bold">
-                  <AlertCircle size={20} />
-                  <h2>נדרשת הרשאת "גישה לכל הקבצים"</h2>
+              <div className="bg-white border-4 border-blue-50 rounded-[40px] p-8 shadow-xl space-y-6">
+                <div className="flex items-center gap-3 text-[#007AFF] font-black text-xl">
+                  <AlertCircle size={24} />
+                  <h2>תיקון שגיאת "No UID" וגישה לכונן</h2>
                 </div>
-                <p className="text-sm text-gray-500 leading-relaxed">
-                  אנדרואיד חוסם גישה לכרטיס זיכרון ללא אישור מיוחד. בצע את השלבים הבאים:
+                <p className="text-sm text-gray-500 font-medium leading-relaxed">
+                  יאיר המלך, השגיאה שקיבלת ב-ADB קרתה כי שם החבילה היה שונה. הנה הפקודה המעודכנת והמדויקת בשבילך:
                 </p>
                 
                 {/* ADB Section */}
-                <div className="bg-gray-900 rounded-2xl p-4 font-mono text-[10px] text-green-400 relative group">
-                  <div className="flex items-center gap-2 mb-2 text-gray-400 border-b border-gray-800 pb-2">
-                    <Terminal size={12} />
-                    <span>פקודת ADB למתקדמים (מחשב)</span>
+                <div className="bg-gray-900 rounded-[24px] p-6 font-mono text-[11px] text-green-400 relative group border-2 border-gray-800">
+                  <div className="flex items-center justify-between mb-3 text-gray-400 border-b border-gray-800 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Terminal size={14} />
+                      <span className="font-bold">פקודת ADB מעודכנת (העתק למחשב)</span>
+                    </div>
                   </div>
-                  <code className="block break-all">
-                    adb shell appops set hebrew.name.fixer.pro MANAGE_EXTERNAL_STORAGE allow
+                  <code className="block break-all leading-loose select-all bg-black/30 p-3 rounded-xl">
+                    adb shell appops set com.yair.hebrewfixer MANAGE_EXTERNAL_STORAGE allow
                   </code>
+                  <p className="mt-3 text-[9px] text-gray-500 italic">
+                    * שים לב: שם החבילה המדויק הוא com.yair.hebrewfixer
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-2">
