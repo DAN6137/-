@@ -13,7 +13,9 @@ import {
   CheckCircle2,
   HardDrive,
   Home,
-  Crown
+  Crown,
+  Terminal,
+  Edit3
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -45,6 +47,8 @@ export default function App() {
   const [platform, setPlatform] = useState<'web' | 'android' | 'ios'>('web');
   const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<string>('unknown');
+  const [manualPath, setManualPath] = useState('');
+  const [showManualInput, setShowManualInput] = useState(false);
   
   // Progress State
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
@@ -58,10 +62,7 @@ export default function App() {
       setPlatform(info.platform as any);
       
       if (info.platform === 'android') {
-        const status = await checkPermissions();
-        if (status !== 'granted') {
-          setShowPermissionsHelp(true);
-        }
+        checkPermissions();
         loadDirectory('', false);
       }
     };
@@ -88,15 +89,13 @@ export default function App() {
 
   const requestPermissions = async () => {
     try {
-      addLog("🛡️ מבקש הרשאות גישה לקבצים...");
-      const status = await Filesystem.requestPermissions();
-      setPermissionStatus(status.publicStorage);
-      if (status.publicStorage === 'granted') {
+      addLog("🛡️ פותח הגדרות הרשאות מערכת...");
+      await Filesystem.requestPermissions();
+      const status = await checkPermissions();
+      if (status === 'granted') {
         addLog("✅ הרשאה התקבלה!");
         setShowPermissionsHelp(false);
         loadDirectory(currentPath, isAbsolute);
-      } else {
-        addLog("❌ הרשאה נדחתה. יש לאשר ידנית בהגדרות.");
       }
     } catch (err) {
       addLog("❌ שגיאה בבקשת הרשאות");
@@ -130,14 +129,15 @@ export default function App() {
       setIsAbsolute(absolute);
       addLog(`📂 נכנס ל: ${path || (absolute ? '/' : 'שורש פנימי')}`);
     } catch (err) {
-      addLog(`❌ שגיאה בטעינה: ${err instanceof Error ? err.message : 'נכשל'}`);
-      if (err instanceof Error && (err.message.includes('Permission') || err.message.includes('denied'))) {
+      const errorMsg = err instanceof Error ? err.message : 'נכשל';
+      addLog(`❌ שגיאה בטעינת ${path || 'שורש'}: ${errorMsg}`);
+      if (errorMsg.includes('Permission') || errorMsg.includes('denied')) {
         setShowPermissionsHelp(true);
       }
     }
   };
 
-  // Recursive Count (to set progress total)
+  // Recursive Count
   const countHebrewItems = async (path: string, absolute: boolean): Promise<number> => {
     let count = 0;
     try {
@@ -158,7 +158,7 @@ export default function App() {
     return count;
   };
 
-  // Recursive Renaming Logic
+  // Recursive Renaming
   const processRecursive = async (path: string, absolute: boolean) => {
     try {
       const options: any = { path };
@@ -171,12 +171,10 @@ export default function App() {
           ? (path.endsWith('/') ? `${path}${file.name}` : `${path}/${file.name}`)
           : (path ? `${path}/${file.name}` : file.name);
         
-        // 1. If it's a directory, go deeper first
         if (file.type === 'directory') {
           await processRecursive(fullPath, absolute);
         }
 
-        // 2. Rename the current item if it has Hebrew
         if (containsHebrew(file.name)) {
           const newName = reverseHebrewInString(file.name);
           const newPath = absolute
@@ -191,11 +189,7 @@ export default function App() {
             });
             processedCount.current++;
             const pct = Math.round((processedCount.current / totalFilesToProcess.current) * 100);
-            setProgress({ 
-              current: processedCount.current, 
-              total: totalFilesToProcess.current, 
-              percentage: pct 
-            });
+            setProgress({ current: processedCount.current, total: totalFilesToProcess.current, percentage: pct });
             addLog(`✅ שונה: ${file.name}`);
           } catch (err) {
             addLog(`❌ נכשל בשינוי ${file.name}`);
@@ -275,10 +269,7 @@ export default function App() {
     if (!currentPath || currentPath === '/') {
       if (isAbsolute) {
         const parts = currentPath.split('/').filter(Boolean);
-        if (parts.length === 0) {
-           // We are at root /, can't go higher
-           return;
-        }
+        if (parts.length === 0) return;
         parts.pop();
         loadDirectory('/' + parts.join('/'), true);
       }
@@ -290,28 +281,29 @@ export default function App() {
     loadDirectory(newPath, isAbsolute);
   };
 
-  const goToStorageRoot = () => {
-    loadDirectory('/storage', true);
-  };
-
-  const goToHome = () => {
-    loadDirectory('', false);
+  const handleManualPathSubmit = () => {
+    if (!manualPath) return;
+    loadDirectory(manualPath, true);
+    setShowManualInput(false);
   };
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-[#007AFF] selection:text-white" dir="rtl">
       <div className="max-w-2xl mx-auto p-4 md:p-8">
         
-        {/* Dedication Header */}
+        {/* Dedication Header - KING THEME */}
         <div className="mb-8 text-center">
           <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="inline-flex items-center gap-3 px-6 py-3 bg-white rounded-full shadow-lg border border-yellow-100 mb-4"
+            initial={{ y: -20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            className="inline-flex flex-col items-center gap-1"
           >
-            <Crown className="text-yellow-500 w-8 h-8 fill-yellow-500" />
-            <h2 className="text-3xl font-black text-gray-900 tracking-tighter">מוקדש ליאיר המלך</h2>
-            <Crown className="text-yellow-500 w-8 h-8 fill-yellow-500" />
+            <div className="flex items-center gap-4 px-8 py-4 bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-400 rounded-3xl shadow-[0_10px_40px_rgba(234,179,8,0.3)] border-4 border-white">
+              <Crown className="text-white w-10 h-10 fill-white drop-shadow-md" />
+              <h2 className="text-4xl font-black text-white tracking-tighter drop-shadow-md">מוקדש ליאיר המלך</h2>
+              <Crown className="text-white w-10 h-10 fill-white drop-shadow-md" />
+            </div>
+            <div className="mt-2 text-[10px] font-bold text-yellow-600 uppercase tracking-[0.3em]">Ultimate King Edition 5.0</div>
           </motion.div>
         </div>
 
@@ -323,14 +315,18 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight text-gray-900">מתקן שמות שירים</h1>
-              <div className="flex items-center gap-1 text-[#007AFF] text-[11px] font-semibold">
-                <span>גרסת KING EDITION 4.0</span>
-              </div>
             </div>
           </div>
           <div className="flex gap-2">
             <button 
-              onClick={goToStorageRoot}
+              onClick={() => setShowManualInput(!showManualInput)}
+              title="הזנת נתיב ידנית"
+              className={`p-2.5 rounded-xl transition-all ${showManualInput ? 'bg-[#007AFF] text-white' : 'bg-white text-gray-400 border border-gray-100'}`}
+            >
+              <Edit3 size={20} />
+            </button>
+            <button 
+              onClick={() => loadDirectory('/storage', true)}
               title="כוננים חיצוניים (SD/USB)"
               className="p-2.5 bg-white text-gray-400 hover:text-[#007AFF] border border-gray-100 rounded-xl shadow-sm transition-all"
             >
@@ -345,6 +341,34 @@ export default function App() {
           </div>
         </header>
 
+        {/* Manual Path Input */}
+        <AnimatePresence>
+          {showManualInput && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden mb-6"
+            >
+              <div className="bg-white p-4 rounded-3xl border border-gray-100 shadow-sm flex gap-2">
+                <input 
+                  type="text" 
+                  value={manualPath}
+                  onChange={(e) => setManualPath(e.target.value)}
+                  placeholder="הקלד נתיב (למשל /storage/emulated/0)"
+                  className="flex-1 bg-gray-50 border-none rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-blue-100 outline-none"
+                />
+                <button 
+                  onClick={handleManualPathSubmit}
+                  className="bg-[#007AFF] text-white px-6 rounded-2xl font-bold text-sm"
+                >
+                  עבור
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Permission Help Panel */}
         <AnimatePresence>
           {showPermissionsHelp && (
@@ -354,20 +378,31 @@ export default function App() {
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden mb-8"
             >
-              <div className="bg-white border border-blue-50 rounded-3xl p-6 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 text-[#007AFF] font-bold">
+              <div className="bg-white border-2 border-red-50 rounded-3xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center gap-2 text-red-500 font-bold">
                   <AlertCircle size={20} />
-                  <h2>אישור הרשאות ניהול קבצים</h2>
+                  <h2>נדרשת הרשאת "גישה לכל הקבצים"</h2>
                 </div>
                 <p className="text-sm text-gray-500 leading-relaxed">
-                  כדי לגשת לכרטיס זיכרון (SD) או OTG, אנדרואיד דורש אישור "ניהול כל הקבצים". ללא אישור זה, לא ניתן לשנות שמות בכוננים חיצוניים.
+                  אנדרואיד חוסם גישה לכרטיס זיכרון ללא אישור מיוחד. בצע את השלבים הבאים:
                 </p>
+                
+                {/* ADB Section */}
+                <div className="bg-gray-900 rounded-2xl p-4 font-mono text-[10px] text-green-400 relative group">
+                  <div className="flex items-center gap-2 mb-2 text-gray-400 border-b border-gray-800 pb-2">
+                    <Terminal size={12} />
+                    <span>פקודת ADB למתקדמים (מחשב)</span>
+                  </div>
+                  <code className="block break-all">
+                    adb shell appops set hebrew.name.fixer.pro MANAGE_EXTERNAL_STORAGE allow
+                  </code>
+                </div>
+
                 <div className="grid grid-cols-1 gap-2">
                   {[
                     "לחץ על הכפתור הכחול למטה",
                     "חפש את Hebrew Name Fixer ברשימה",
-                    "סמן 'אפשר גישה לניהול כל הקבצים'",
-                    "חזור לאפליקציה והכל יעבוד מושלם!"
+                    "סמן 'אפשר גישה לניהול כל הקבצים'"
                   ].map((step, i) => (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 p-3 rounded-2xl border border-gray-100">
                       <div className="bg-[#007AFF] text-white w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">{i+1}</div>
@@ -436,7 +471,7 @@ export default function App() {
               <div className="flex gap-2">
                 {isAbsolute && (
                   <button 
-                    onClick={goToHome}
+                    onClick={() => loadDirectory('', false)}
                     title="חזרה לאחסון פנימי"
                     className="p-2.5 bg-white border border-gray-100 rounded-xl text-gray-400 hover:text-[#007AFF] transition-all shadow-sm"
                   >
@@ -545,7 +580,7 @@ export default function App() {
           </div>
           <div className="flex items-center justify-center gap-2 text-gray-400">
             <Info size={12} />
-            <p className="text-[10px] font-medium">מוקדש ליאיר המלך - גרסה 4.0</p>
+            <p className="text-[10px] font-medium">מוקדש ליאיר המלך - גרסה 5.0</p>
           </div>
         </footer>
 
