@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   FolderOpen, 
   FileAudio, 
   RotateCcw, 
   AlertCircle, 
-  Play, 
   ArrowRightLeft,
   Trash2,
   ShieldCheck,
@@ -13,7 +12,8 @@ import {
   Layers,
   CheckCircle2,
   HardDrive,
-  Home
+  Home,
+  Crown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -38,13 +38,18 @@ interface FileEntry {
 export default function App() {
   // State
   const [currentPath, setCurrentPath] = useState('');
-  const [isAbsolute, setIsAbsolute] = useState(false); // Track if we are using absolute paths (for SD/OTG)
+  const [isAbsolute, setIsAbsolute] = useState(false);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [platform, setPlatform] = useState<'web' | 'android' | 'ios'>('web');
   const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<string>('unknown');
+  
+  // Progress State
+  const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
+  const totalFilesToProcess = useRef(0);
+  const processedCount = useRef(0);
 
   // Initialization
   useEffect(() => {
@@ -53,7 +58,10 @@ export default function App() {
       setPlatform(info.platform as any);
       
       if (info.platform === 'android') {
-        checkPermissions();
+        const status = await checkPermissions();
+        if (status !== 'granted') {
+          setShowPermissionsHelp(true);
+        }
         loadDirectory('', false);
       }
     };
@@ -71,16 +79,25 @@ export default function App() {
     try {
       const status = await Filesystem.checkPermissions();
       setPermissionStatus(status.publicStorage);
+      return status.publicStorage;
     } catch (err) {
       console.error(err);
+      return 'unknown';
     }
   };
 
-  const requestBasicPermissions = async () => {
+  const requestPermissions = async () => {
     try {
+      addLog("🛡️ מבקש הרשאות גישה לקבצים...");
       const status = await Filesystem.requestPermissions();
       setPermissionStatus(status.publicStorage);
-      addLog(`הרשאות: ${status.publicStorage}`);
+      if (status.publicStorage === 'granted') {
+        addLog("✅ הרשאה התקבלה!");
+        setShowPermissionsHelp(false);
+        loadDirectory(currentPath, isAbsolute);
+      } else {
+        addLog("❌ הרשאה נדחתה. יש לאשר ידנית בהגדרות.");
+      }
     } catch (err) {
       addLog("❌ שגיאה בבקשת הרשאות");
     }
@@ -120,9 +137,29 @@ export default function App() {
     }
   };
 
+  // Recursive Count (to set progress total)
+  const countHebrewItems = async (path: string, absolute: boolean): Promise<number> => {
+    let count = 0;
+    try {
+      const options: any = { path };
+      if (!absolute) options.directory = Directory.ExternalStorage;
+      const result = await Filesystem.readdir(options);
+
+      for (const file of result.files) {
+        if (containsHebrew(file.name)) count++;
+        if (file.type === 'directory') {
+          const fullPath = absolute 
+            ? (path.endsWith('/') ? `${path}${file.name}` : `${path}/${file.name}`)
+            : (path ? `${path}/${file.name}` : file.name);
+          count += await countHebrewItems(fullPath, absolute);
+        }
+      }
+    } catch (e) {}
+    return count;
+  };
+
   // Recursive Renaming Logic
   const processRecursive = async (path: string, absolute: boolean) => {
-    let count = 0;
     try {
       const options: any = { path };
       if (!absolute) options.directory = Directory.ExternalStorage;
@@ -136,7 +173,7 @@ export default function App() {
         
         // 1. If it's a directory, go deeper first
         if (file.type === 'directory') {
-          count += await processRecursive(fullPath, absolute);
+          await processRecursive(fullPath, absolute);
         }
 
         // 2. Rename the current item if it has Hebrew
@@ -152,8 +189,14 @@ export default function App() {
               to: newPath,
               directory: absolute ? undefined : Directory.ExternalStorage
             });
-            count++;
-            addLog(`✅ שונה: ${file.name} -> ${newName}`);
+            processedCount.current++;
+            const pct = Math.round((processedCount.current / totalFilesToProcess.current) * 100);
+            setProgress({ 
+              current: processedCount.current, 
+              total: totalFilesToProcess.current, 
+              percentage: pct 
+            });
+            addLog(`✅ שונה: ${file.name}`);
           } catch (err) {
             addLog(`❌ נכשל בשינוי ${file.name}`);
           }
@@ -162,17 +205,29 @@ export default function App() {
     } catch (err) {
       addLog(`⚠️ שגיאה בתיקייה ${path}`);
     }
-    return count;
   };
 
   const handleDeepFix = async () => {
     setIsProcessing(true);
-    addLog(`🚀 מתחיל תיקון עמוק מ: ${currentPath || (isAbsolute ? '/' : 'שורש פנימי')}`);
+    setProgress({ current: 0, total: 0, percentage: 0 });
+    addLog(`🔍 סורק קבצים לתיקון...`);
     
-    const totalRenamed = await processRecursive(currentPath, isAbsolute);
+    const total = await countHebrewItems(currentPath, isAbsolute);
+    if (total === 0) {
+      addLog("ℹ️ לא נמצאו פריטים לתיקון.");
+      setIsProcessing(false);
+      return;
+    }
+
+    totalFilesToProcess.current = total;
+    processedCount.current = 0;
+    setProgress({ current: 0, total, percentage: 0 });
+    
+    addLog(`🚀 מתחיל תיקון עמוק ל-${total} פריטים...`);
+    await processRecursive(currentPath, isAbsolute);
     
     setIsProcessing(false);
-    addLog(`✨ סיימתי תיקון עמוק! שונו ${totalRenamed} פריטים.`);
+    addLog(`✨ סיימתי תיקון עמוק! שונו ${processedCount.current} פריטים.`);
     loadDirectory(currentPath, isAbsolute);
   };
 
@@ -184,9 +239,12 @@ export default function App() {
     }
 
     setIsProcessing(true);
+    totalFilesToProcess.current = itemsToFix.length;
+    processedCount.current = 0;
+    setProgress({ current: 0, total: itemsToFix.length, percentage: 0 });
+    
     addLog(`🚀 מתחיל שינוי שמות ל-${itemsToFix.length} פריטים...`);
     
-    let successCount = 0;
     for (const file of itemsToFix) {
       const newName = reverseHebrewInString(file.name);
       const newPath = isAbsolute
@@ -199,7 +257,9 @@ export default function App() {
           to: newPath,
           directory: isAbsolute ? undefined : Directory.ExternalStorage
         });
-        successCount++;
+        processedCount.current++;
+        const pct = Math.round((processedCount.current / totalFilesToProcess.current) * 100);
+        setProgress({ current: processedCount.current, total: totalFilesToProcess.current, percentage: pct });
         addLog(`✅ שונה: ${file.name}`);
       } catch (err) {
         addLog(`❌ נכשל: ${file.name}`);
@@ -207,16 +267,18 @@ export default function App() {
     }
     
     setIsProcessing(false);
-    addLog(`✨ סיימתי! שונו ${successCount} פריטים.`);
+    addLog(`✨ סיימתי! שונו ${processedCount.current} פריטים.`);
     loadDirectory(currentPath, isAbsolute);
   };
 
   const navigateUp = () => {
     if (!currentPath || currentPath === '/') {
       if (isAbsolute) {
-        // If we are at /storage, we can't go higher safely in some versions, but let's try
         const parts = currentPath.split('/').filter(Boolean);
-        if (parts.length === 0) return;
+        if (parts.length === 0) {
+           // We are at root /, can't go higher
+           return;
+        }
         parts.pop();
         loadDirectory('/' + parts.join('/'), true);
       }
@@ -240,16 +302,29 @@ export default function App() {
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-[#007AFF] selection:text-white" dir="rtl">
       <div className="max-w-2xl mx-auto p-4 md:p-8">
         
-        {/* Header */}
+        {/* Dedication Header */}
+        <div className="mb-8 text-center">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="inline-flex items-center gap-3 px-6 py-3 bg-white rounded-full shadow-lg border border-yellow-100 mb-4"
+          >
+            <Crown className="text-yellow-500 w-8 h-8 fill-yellow-500" />
+            <h2 className="text-3xl font-black text-gray-900 tracking-tighter">מוקדש ליאיר המלך</h2>
+            <Crown className="text-yellow-500 w-8 h-8 fill-yellow-500" />
+          </motion.div>
+        </div>
+
+        {/* App Header */}
         <header className="mb-10 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-gray-100">
               <ArrowRightLeft className="text-[#007AFF] w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-gray-900">מתקן שמות שירים</h1>
+              <h1 className="text-xl font-bold tracking-tight text-gray-900">מתקן שמות שירים</h1>
               <div className="flex items-center gap-1 text-[#007AFF] text-[11px] font-semibold">
-                <span>גרסת ULTIMATE 3.0</span>
+                <span>גרסת KING EDITION 4.0</span>
               </div>
             </div>
           </div>
@@ -285,14 +360,14 @@ export default function App() {
                   <h2>אישור הרשאות ניהול קבצים</h2>
                 </div>
                 <p className="text-sm text-gray-500 leading-relaxed">
-                  כדי לשנות שמות בכרטיס זיכרון או OTG, אנדרואיד דורש אישור "ניהול כל הקבצים".
+                  כדי לגשת לכרטיס זיכרון (SD) או OTG, אנדרואיד דורש אישור "ניהול כל הקבצים". ללא אישור זה, לא ניתן לשנות שמות בכוננים חיצוניים.
                 </p>
                 <div className="grid grid-cols-1 gap-2">
                   {[
-                    "כנס להגדרות המכשיר > אפליקציות",
-                    "חפש את Hebrew Name Fixer",
-                    "כנס להרשאות > קבצים ומדיה",
-                    "בחר ב-'אפשר ניהול של כל הקבצים'"
+                    "לחץ על הכפתור הכחול למטה",
+                    "חפש את Hebrew Name Fixer ברשימה",
+                    "סמן 'אפשר גישה לניהול כל הקבצים'",
+                    "חזור לאפליקציה והכל יעבוד מושלם!"
                   ].map((step, i) => (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 p-3 rounded-2xl border border-gray-100">
                       <div className="bg-[#007AFF] text-white w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs shrink-0">{i+1}</div>
@@ -301,13 +376,40 @@ export default function App() {
                   ))}
                 </div>
                 <button 
-                  onClick={requestBasicPermissions}
+                  onClick={requestPermissions}
                   className="w-full py-3.5 bg-[#007AFF] text-white font-bold rounded-2xl hover:bg-[#0066D6] transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
                 >
                   <ShieldCheck size={18} />
-                  בקש הרשאות בסיסיות
+                  פתח הגדרות הרשאות
                 </button>
               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Progress Bar */}
+        <AnimatePresence>
+          {isProcessing && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              className="mb-6 bg-white p-5 rounded-3xl border border-blue-50 shadow-sm"
+            >
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">התקדמות תיקון</p>
+                <p className="text-sm font-black text-[#007AFF]">{progress.percentage}%</p>
+              </div>
+              <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progress.percentage}%` }}
+                  className="h-full bg-[#007AFF] shadow-[0_0_10px_rgba(0,122,255,0.4)]"
+                />
+              </div>
+              <p className="text-[10px] text-gray-400 mt-2 font-medium text-center">
+                מעבד פריט {progress.current} מתוך {progress.total}
+              </p>
             </motion.div>
           )}
         </AnimatePresence>
@@ -443,14 +545,14 @@ export default function App() {
           </div>
           <div className="flex items-center justify-center gap-2 text-gray-400">
             <Info size={12} />
-            <p className="text-[10px] font-medium">תומך בכרטיסי זיכרון ו-OTG דרך כפתור הכוננים.</p>
+            <p className="text-[10px] font-medium">מוקדש ליאיר המלך - גרסה 4.0</p>
           </div>
         </footer>
 
       </div>
 
       <style>{`
-        @import url('                                                       ;600;700;800&display=swap');
+        @import url('                                                       ;600;700;800;900&display=swap');
         
         body {
           font-family: 'Inter', sans-serif;
