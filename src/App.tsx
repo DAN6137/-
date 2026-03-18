@@ -24,9 +24,31 @@ import { Device } from '@capacitor/device';
 // --- Utils ---
 const containsHebrew = (str: string) => /[\u0590-\u05FF]/.test(str);
 
-const reverseHebrewInString = (str: string) => {
-  const hebrewRegex = /[\u0590-\u05FF]+/g;
-  return str.replace(hebrewRegex, (match) => match.split('').reverse().join(''));
+const reverseHebrewInString = (str: string, reverseWords: boolean, reverseChars: boolean) => {
+  if (!reverseWords && !reverseChars) return str;
+  
+  // Match Hebrew blocks including spaces
+  const hebrewRegex = /[\u0590-\u05FF\s]+/g;
+  
+  return str.replace(hebrewRegex, (match) => {
+    // Split into words and spaces
+    const parts = match.split(/(\s+)/);
+    
+    let processedParts = parts.map(part => {
+      if (/[\u0590-\u05FF]/.test(part)) {
+        return reverseChars ? part.split('').reverse().join('') : part;
+      }
+      return part;
+    });
+
+    if (reverseWords) {
+      // Reverse the order of words but keep spaces in place? 
+      // Actually, simple reverse() on the parts array is better
+      processedParts = processedParts.reverse();
+    }
+
+    return processedParts.join('');
+  });
 };
 
 // --- Types ---
@@ -51,6 +73,10 @@ export default function App() {
   const [showManualInput, setShowManualInput] = useState(false);
   const [showPermissionsHelp, setShowPermissionsHelp] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // Options
+  const [revChars, setRevChars] = useState(true);
+  const [revWords, setRevWords] = useState(false);
 
   // Progress State
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
@@ -213,7 +239,7 @@ export default function App() {
         }
 
         if (containsHebrew(file.name)) {
-          const newName = reverseHebrewInString(file.name);
+          const newName = reverseHebrewInString(file.name, revWords, revChars);
           const newPath = absolute
             ? (path.endsWith('/') ? `${path}${newName}` : `${path}/${newName}`)
             : (path ? `${path}/${newName}` : newName);
@@ -277,7 +303,7 @@ export default function App() {
     addLog(`🚀 מתחיל שינוי שמות ל-${itemsToFix.length} פריטים...`);
     
     for (const file of itemsToFix) {
-      const newName = reverseHebrewInString(file.name);
+      const newName = reverseHebrewInString(file.name, revWords, revChars);
       const newPath = isAbsolute
         ? (currentPath.endsWith('/') ? `${currentPath}${newName}` : `${currentPath}/${newName}`)
         : (currentPath ? `${currentPath}/${newName}` : newName);
@@ -330,7 +356,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-[#007AFF] selection:text-white" dir="rtl">
-      <div className="max-w-2xl mx-auto p-4 md:p-8">
+      <div className="max-w-md mx-auto p-4 md:p-6">
         
         {/* Dedication Header - KING THEME */}
         <div className="mb-10 text-center">
@@ -340,16 +366,13 @@ export default function App() {
             transition={{ type: "spring", stiffness: 200, damping: 15 }}
             className="inline-flex flex-col items-center gap-2"
           >
-            <div className="flex items-center gap-6 px-12 py-6 bg-gradient-to-br from-yellow-300 via-yellow-500 to-orange-500 rounded-[40px] shadow-[0_20px_50px_rgba(234,179,8,0.4)] border-8 border-white relative">
-              <div className="absolute -top-8 -right-8 rotate-12">
-                <Crown className="text-yellow-200 w-16 h-16 fill-yellow-200 drop-shadow-xl opacity-50" />
+            <div className="flex items-center gap-6 px-8 py-4 bg-gradient-to-br from-yellow-300 via-yellow-500 to-orange-500 rounded-[32px] shadow-[0_15px_40px_rgba(234,179,8,0.3)] border-4 border-white relative">
+              <div className="absolute -top-6 -right-6 rotate-12">
+                <Crown className="text-yellow-200 w-12 h-12 fill-yellow-200 drop-shadow-xl opacity-40" />
               </div>
-              <Crown className="text-white w-14 h-14 fill-white drop-shadow-lg" />
-              <h2 className="text-5xl font-black text-white tracking-tighter drop-shadow-2xl">מוקדש ליאיר המלך</h2>
-              <Crown className="text-white w-14 h-14 fill-white drop-shadow-lg" />
-              <div className="absolute -bottom-8 -left-8 -rotate-12">
-                <Crown className="text-yellow-200 w-16 h-16 fill-yellow-200 drop-shadow-xl opacity-50" />
-              </div>
+              <Crown className="text-white w-10 h-10 fill-white drop-shadow-lg" />
+              <h2 className="text-3xl font-black text-white tracking-tighter drop-shadow-2xl">יאיר המלך</h2>
+              <Crown className="text-white w-10 h-10 fill-white drop-shadow-lg" />
             </div>
             <div className="mt-4 text-xs font-black text-yellow-600 uppercase tracking-[0.4em] bg-yellow-100 px-4 py-1 rounded-full">KING EXPLORER 8.0 - FULL ACCESS</div>
           </motion.div>
@@ -410,6 +433,22 @@ export default function App() {
 
         {/* Search & Breadcrumbs */}
         <div className="mb-6 space-y-4">
+          {/* Options Toggles */}
+          <div className="flex gap-2 mb-2">
+            <button 
+              onClick={() => setRevChars(!revChars)}
+              className={`flex-1 py-2 rounded-xl text-[10px] font-black transition-all border ${revChars ? 'bg-blue-50 border-blue-200 text-[#007AFF]' : 'bg-white border-gray-100 text-gray-400'}`}
+            >
+              הפוך תווים: {revChars ? 'כן' : 'לא'}
+            </button>
+            <button 
+              onClick={() => setRevWords(!revWords)}
+              className={`flex-1 py-2 rounded-xl text-[10px] font-black transition-all border ${revWords ? 'bg-blue-50 border-blue-200 text-[#007AFF]' : 'bg-white border-gray-100 text-gray-400'}`}
+            >
+              הפוך סדר מילים: {revWords ? 'כן' : 'לא'}
+            </button>
+          </div>
+
           <div className="relative">
             <input 
               type="text"
@@ -594,7 +633,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="h-[420px] overflow-y-auto custom-scrollbar bg-white">
+            <div className="h-[500px] overflow-y-auto custom-scrollbar bg-white">
               {filteredFiles.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-gray-300 p-8 text-center">
                   <FolderOpen size={48} className="mb-4 opacity-10" />
